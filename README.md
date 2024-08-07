@@ -23,9 +23,8 @@ cargo install espup
 espup install
 ```
 
-- Source environment variables in each shell or in shell profile.
+- Source environment variables in each shell or in shell profile:
 
 ```shell
 . $HOME/export-esp.sh
 ```
-
