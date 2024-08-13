@@ -1,4 +1,4 @@
-# stepper-motor-cat-toy
+# Motor String Cat Toy
 
 ## Contributing
 
