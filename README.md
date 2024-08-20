@@ -17,7 +17,7 @@
 - 1 x 608R bearing
 - 1 x 3D printed case
 
-![ESP32 C3 SuperMini Pinout](./assets/ESP32_C3_supermini_pinout.jpg)
+![ESP32 C3 SuperMini Pinout](./datasheets/ESP32_C3_supermini_pinout.jpg)
 
 ## Wiring
 
