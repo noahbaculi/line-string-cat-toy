@@ -144,6 +144,6 @@ fn main() -> ! {
         motor.stop();
         delay.delay_millis(2000);
 
-        log::info!("Stepping...");
+        println!("Stepping...");
     }
 }
