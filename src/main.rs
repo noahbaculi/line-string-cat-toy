@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use embassy_executor::Spawner;
 use esp_backtrace as _;
 use esp_hal::ledc::timer::TimerIFace;
 use esp_hal::{
@@ -94,8 +95,8 @@ where
     }
 }
 
-#[entry]
-fn main() -> ! {
+#[main]
+async fn main(spawner: Spawner) {
     let peripherals = Peripherals::take();
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 

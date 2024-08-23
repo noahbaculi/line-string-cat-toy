@@ -6,22 +6,34 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+embassy-executor = { version = "0.5.0", features = [
+    "task-arena-size-40960",
+    "integrated-timers",
+] }
+embassy-futures = "0.1.1"
+embassy-sync = "0.6.0"
+embassy-time = { version = "0.3.2" }
+embassy-time-driver = { version = "0.1.0", optional = true }
+embassy-usb = { version = "0.2.0", default-features = false, optional = true }
+static_cell = { version = "2.1.0" }
+esp-hal-embassy = { version = "0.2.0", features = ["esp32c3"] }
 esp-backtrace = { version = "0.13.0", features = [
-    "esp32",
+    "esp32c3",
     "exception-handler",
     "panic-handler",
     "println",
 ] }
-esp-hal = { version = "0.19.0", features = [ "esp32" ] }
-esp-println = { version = "0.10.0", features = ["esp32", "log"] }
+esp-hal = { version = "0.19.0", features = ["esp32c3", "async"] }
+esp-println = { version = "0.10.0", features = ["esp32c3", "log"] }
 log = { version = "0.4.21" }
+
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization
 opt-level = "s"
 
 [profile.release]
-codegen-units = 1 # LLVM can perform better optimizations using a single thread
+codegen-units = 1        # LLVM can perform better optimizations using a single thread
 debug = 2
 debug-assertions = false
 incremental = false

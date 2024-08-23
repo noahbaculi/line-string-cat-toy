@@ -1,4 +1,4 @@
-# Motor String Cat Toy
+# Line String Cat Toy
 
 ## Hardware
 
