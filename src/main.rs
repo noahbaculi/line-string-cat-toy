@@ -31,6 +31,7 @@ use esp_println::dbg;
 use log::{debug, info};
 use static_cell::StaticCell;
 
+const NUM_ADC_SAMPLES: usize = 100;
 const MAX_ACTIVE_SEC: u64 = 10 * 60; // Number of seconds the device will be active before going to deep sleep
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
@@ -117,8 +118,6 @@ async fn main(spawner: Spawner) {
     spawner.must_spawn(monitor_speed_pot(adc1, speed_pot_pin));
 }
 
-const NUM_ADC_SAMPLES: usize = 100;
-
 #[embassy_executor::task]
 async fn monitor_speed_pot(
     adc1_mutex: &'static Adc1Mutex,
@@ -126,7 +125,7 @@ async fn monitor_speed_pot(
 ) {
     let mut ticker = Ticker::every(Duration::from_millis(200));
     loop {
-        debug!("Checking battery voltage.");
+        debug!("Checking speed pot pin (#0)");
         {
             let mut adc1 = adc1_mutex.lock().await;
             let mut speed_pot_pin = speed_pot_pin_mutex.lock().await;
