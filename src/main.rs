@@ -2,11 +2,17 @@
 #![no_main]
 
 use embassy_executor::Spawner;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
+use esp_hal::clock::CpuClock;
 use esp_hal::ledc::timer::TimerIFace;
+use esp_hal::rtc_cntl::Rtc;
+use esp_hal::timer::timg::TimerGroup;
+use esp_hal::timer::{ErasedTimer, OneShotTimer};
 use esp_hal::{
     clock::ClockControl,
-    delay::Delay,
     gpio::{Io, OutputPin},
     ledc::{
         channel,
@@ -18,7 +24,79 @@ use esp_hal::{
     prelude::*,
     system::SystemControl,
 };
-use esp_println::println;
+use log::info;
+use static_cell::StaticCell;
+
+const MAX_ACTIVE_SEC: u64 = 10 * 60; // Number of seconds the device will be active before going to deep sleep
+
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
+type RtcMutex = Mutex<CriticalSectionRawMutex, Rtc<'static>>;
+
+#[main]
+async fn main(spawner: Spawner) {
+    let peripherals = Peripherals::take();
+    let system = SystemControl::new(peripherals.SYSTEM);
+    let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock80MHz).freeze();
+    esp_println::logger::init_logger(log::LevelFilter::Debug);
+    let timer_grp = TimerGroup::new(peripherals.TIMG0, &clocks, None);
+    esp_hal_embassy::init(
+        &clocks,
+        mk_static!(
+            [OneShotTimer<ErasedTimer>; 1],
+            [OneShotTimer::new(timer_grp.timer0.into())]
+        ),
+    );
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+
+    static RTC: StaticCell<RtcMutex> = StaticCell::new();
+    let rtc = RTC.init(Mutex::new(Rtc::new(peripherals.LPWR, None)));
+
+    let motor_pwm_pin_forward = io.pins.gpio18;
+    let motor_pwm_pin_reverse = io.pins.gpio19;
+
+    // Instantiate PWM infra
+    let mut ledc_pwm_controller = Ledc::new(peripherals.LEDC, &clocks);
+    ledc_pwm_controller.set_global_slow_clock(LSGlobalClkSource::APBClk);
+    let mut pwm_timer = ledc_pwm_controller.get_timer::<LowSpeed>(timer::Number::Timer0);
+    pwm_timer
+        .configure(timer::config::Config {
+            duty: timer::config::Duty::Duty14Bit,
+            clock_source: timer::LSClockSource::APBClk,
+            frequency: 2.kHz(),
+        })
+        .unwrap();
+
+    let mut motor = Motor::new(
+        &ledc_pwm_controller,
+        &pwm_timer,
+        channel::Number::Channel0,
+        channel::Number::Channel1,
+        motor_pwm_pin_forward,
+        motor_pwm_pin_reverse,
+    );
+
+    motor.start_movement(MotorDirection::Forward, 25);
+    motor.start_movement(MotorDirection::Reverse, 25);
+    motor.stop();
+
+    spawner.must_spawn(deep_sleep_countdown(rtc));
+}
+
+#[embassy_executor::task]
+async fn deep_sleep_countdown(rtc: &'static RtcMutex) {
+    Timer::after(Duration::from_secs(MAX_ACTIVE_SEC)).await;
+    info!("{} seconds passed, going to deep sleep", MAX_ACTIVE_SEC);
+    rtc.lock().await.sleep_deep(&[]);
+}
 
 enum MotorDirection {
     Forward,
@@ -92,59 +170,5 @@ where
     fn stop(&mut self) {
         self.pwm_channel_forward.set_duty(0).unwrap();
         self.pwm_channel_reverse.set_duty(0).unwrap();
-    }
-}
-
-#[main]
-async fn main(spawner: Spawner) {
-    let peripherals = Peripherals::take();
-    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-
-    let motor_pwm_pin_forward = io.pins.gpio18;
-    let motor_pwm_pin_reverse = io.pins.gpio19;
-
-    esp_println::logger::init_logger_from_env();
-    let system = SystemControl::new(peripherals.SYSTEM);
-    let clocks = ClockControl::max(system.clock_control).freeze();
-    let delay = Delay::new(&clocks);
-
-    // Instantiate PWM infra
-    let mut ledc_pwm_controller = Ledc::new(peripherals.LEDC, &clocks);
-    ledc_pwm_controller.set_global_slow_clock(LSGlobalClkSource::APBClk);
-    let mut pwm_timer = ledc_pwm_controller.get_timer::<LowSpeed>(timer::Number::Timer0);
-    pwm_timer
-        .configure(timer::config::Config {
-            duty: timer::config::Duty::Duty14Bit,
-            clock_source: timer::LSClockSource::APBClk,
-            frequency: 2.kHz(),
-        })
-        .unwrap();
-
-    let mut motor = Motor::new(
-        &ledc_pwm_controller,
-        &pwm_timer,
-        channel::Number::Channel0,
-        channel::Number::Channel1,
-        motor_pwm_pin_forward,
-        motor_pwm_pin_reverse,
-    );
-
-    loop {
-        motor.start_movement(MotorDirection::Forward, 25);
-        delay.delay_millis(2000);
-
-        motor.start_movement(MotorDirection::Forward, 100);
-        delay.delay_millis(2000);
-
-        motor.start_movement(MotorDirection::Reverse, 25);
-        delay.delay_millis(2000);
-
-        motor.start_movement(MotorDirection::Reverse, 100);
-        delay.delay_millis(2000);
-
-        motor.stop();
-        delay.delay_millis(2000);
-
-        println!("Stepping...");
     }
 }
