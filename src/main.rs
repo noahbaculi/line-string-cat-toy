@@ -4,10 +4,13 @@
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Ticker, Timer};
 use esp_backtrace as _;
+use esp_hal::analog::adc::{Adc, AdcCalLine, AdcConfig, AdcPin, Attenuation};
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::GpioPin;
 use esp_hal::ledc::timer::TimerIFace;
+use esp_hal::peripherals::ADC1;
 use esp_hal::rtc_cntl::Rtc;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::timer::{ErasedTimer, OneShotTimer};
@@ -24,7 +27,8 @@ use esp_hal::{
     prelude::*,
     system::SystemControl,
 };
-use log::info;
+use esp_println::dbg;
+use log::{debug, info};
 use static_cell::StaticCell;
 
 const MAX_ACTIVE_SEC: u64 = 10 * 60; // Number of seconds the device will be active before going to deep sleep
@@ -40,6 +44,11 @@ macro_rules! mk_static {
 }
 
 type RtcMutex = Mutex<CriticalSectionRawMutex, Rtc<'static>>;
+
+type Adc1Calibration = AdcCalLine<ADC1>;
+type Adc1Mutex = Mutex<CriticalSectionRawMutex, Adc<'static, ADC1>>;
+type SpeedAdcPinMutex = Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<0>, ADC1, Adc1Calibration>>;
+type TimeAdcPinMutex = Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<1>, ADC1, Adc1Calibration>>;
 
 #[main]
 async fn main(spawner: Spawner) {
@@ -84,11 +93,53 @@ async fn main(spawner: Spawner) {
         motor_pwm_pin_reverse,
     );
 
+    // Instantiate ADC and mutexes
+    let mut adc1_config = AdcConfig::new();
+    static SPEED_STATIC_CELL: StaticCell<SpeedAdcPinMutex> = StaticCell::new();
+    let speed_pot_pin = SPEED_STATIC_CELL.init(Mutex::new(
+        adc1_config
+            .enable_pin_with_cal::<_, Adc1Calibration>(io.pins.gpio0, Attenuation::Attenuation11dB),
+    ));
+    static TIME_STATIC_CELL: StaticCell<TimeAdcPinMutex> = StaticCell::new();
+    let _time_pot_pin = TIME_STATIC_CELL.init(Mutex::new(
+        adc1_config
+            .enable_pin_with_cal::<_, Adc1Calibration>(io.pins.gpio1, Attenuation::Attenuation11dB),
+    ));
+    let adc1 = Adc::new(peripherals.ADC1, adc1_config);
+    static ADC1_MUTEX: StaticCell<Adc1Mutex> = StaticCell::new();
+    let adc1 = ADC1_MUTEX.init(Mutex::new(adc1));
+
     motor.start_movement(MotorDirection::Forward, 25);
     motor.start_movement(MotorDirection::Reverse, 25);
     motor.stop();
 
     spawner.must_spawn(deep_sleep_countdown(rtc));
+    spawner.must_spawn(monitor_speed_pot(adc1, speed_pot_pin));
+}
+
+const NUM_ADC_SAMPLES: usize = 100;
+
+#[embassy_executor::task]
+async fn monitor_speed_pot(
+    adc1_mutex: &'static Adc1Mutex,
+    speed_pot_pin_mutex: &'static SpeedAdcPinMutex,
+) {
+    let mut ticker = Ticker::every(Duration::from_millis(200));
+    loop {
+        debug!("Checking battery voltage.");
+        {
+            let mut adc1 = adc1_mutex.lock().await;
+            let mut speed_pot_pin = speed_pot_pin_mutex.lock().await;
+            let avg_pin_value: u16 = ((0..NUM_ADC_SAMPLES)
+                .map(|_| nb::block!(adc1.read_oneshot(&mut speed_pot_pin)).unwrap() as u32)
+                .sum::<u32>()
+                / NUM_ADC_SAMPLES as u32)
+                .try_into()
+                .expect("Average of ADC readings is too large to fit into u16");
+            dbg!("Average speed pot pin value: {}", avg_pin_value);
+        }
+        ticker.next().await;
+    }
 }
 
 #[embassy_executor::task]
