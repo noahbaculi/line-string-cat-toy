@@ -2,11 +2,10 @@
 #![no_main]
 
 use core::sync::atomic::{AtomicU8, Ordering};
-
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Duration, Ticker, Timer};
+use embassy_time::{Duration, Instant, Ticker, Timer};
 use esp_backtrace as _;
 use esp_hal::analog::adc::{Adc, AdcCalLine, AdcConfig, AdcPin, Attenuation};
 use esp_hal::clock::CpuClock;
@@ -31,6 +30,8 @@ use esp_hal::{
 };
 use esp_println::dbg;
 use log::{debug, info};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
 
 const NUM_ADC_SAMPLES: usize = 100;
@@ -121,12 +122,26 @@ async fn main(spawner: Spawner) {
     static ADC1_MUTEX: StaticCell<Adc1Mutex> = StaticCell::new();
     let adc1 = ADC1_MUTEX.init(Mutex::new(adc1));
 
-    motor.start_movement(MotorDirection::Forward, 25);
-    motor.start_movement(MotorDirection::Reverse, 25);
-    motor.stop();
-
     spawner.must_spawn(deep_sleep_countdown(rtc));
     spawner.must_spawn(monitor_speed_pot(adc1, speed_pot_pin));
+
+    let mut small_rng = SmallRng::seed_from_u64(1); // seed irrelevant for random number generation
+    let mut ticker = Ticker::every(Duration::from_millis(200));
+    for direction in [MotorDirection::Forward, MotorDirection::Reverse]
+        .iter()
+        .cycle()
+    {
+        let start_time = Instant::now();
+        let max_motor_percent = CURRENT_MAX_MOTOR_PERCENT.load(Ordering::Relaxed);
+        let duty_percent = small_rng.gen_range(MIN_MOTOR_DUTY_PERCENT..=max_motor_percent);
+        motor.start_movement(direction, duty_percent);
+
+        let movement_duration = Duration::from_millis(2 * 1_000);
+
+        while Instant::now().duration_since(start_time) >= movement_duration {
+            ticker.next().await;
+        }
+    }
 }
 
 #[embassy_executor::task]
@@ -237,7 +252,7 @@ where
         }
     }
 
-    fn start_movement(&mut self, direction: MotorDirection, duty_percent: u8) {
+    fn start_movement(&mut self, direction: &MotorDirection, duty_percent: u8) {
         match direction {
             MotorDirection::Forward => {
                 self.pwm_channel_forward.set_duty(duty_percent).unwrap();
