@@ -33,6 +33,13 @@ use static_cell::StaticCell;
 
 const NUM_ADC_SAMPLES: usize = 100;
 const MAX_ACTIVE_SEC: u64 = 10 * 60; // Number of seconds the device will be active before going to deep sleep
+const MIN_MOTOR_DUTY_PERCENT: u8 = 20;
+const MAX_MOTOR_DUTY_PERCENT: u8 = 100;
+const _MIN_MOVEMENT_TIME: Duration = Duration::from_millis(200);
+const _MAX_MOVEMENT_TIME: Duration = Duration::from_millis(2_500);
+
+const MIN_ADC_VOLTAGE: u16 = 0; // mV
+const MAX_ADC_VOLTAGE: u16 = 3000; // mV
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
@@ -136,9 +143,30 @@ async fn monitor_speed_pot(
                 .try_into()
                 .expect("Average of ADC readings is too large to fit into u16");
             dbg!("Average speed pot pin value: {}", avg_pin_value);
+            let duty_percent: u8 = map_range(
+                avg_pin_value,
+                MIN_ADC_VOLTAGE,
+                MAX_ADC_VOLTAGE,
+                MIN_MOTOR_DUTY_PERCENT.into(),
+                MAX_MOTOR_DUTY_PERCENT.into(),
+            )
+            .try_into()
+            .expect("Duty percent is too large to fit into a u8");
+            dbg!("Duty percent: {}", duty_percent);
         }
         ticker.next().await;
     }
+}
+
+fn map_range<T>(in_value: T, in_min: T, in_max: T, out_min: T, out_max: T) -> T
+where
+    T: Copy
+        + core::ops::Mul<Output = T>
+        + core::ops::Add<Output = T>
+        + core::ops::Div<Output = T>
+        + core::ops::Sub<Output = T>,
+{
+    ((in_value - in_min) * (out_max - out_min) / (in_max - in_min)) + out_min
 }
 
 #[embassy_executor::task]
