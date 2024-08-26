@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+use core::sync::atomic::{AtomicU8, Ordering};
+
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -40,6 +42,8 @@ const _MAX_MOVEMENT_TIME: Duration = Duration::from_millis(2_500);
 
 const MIN_ADC_VOLTAGE: u16 = 0; // mV
 const MAX_ADC_VOLTAGE: u16 = 3000; // mV
+                                   //
+static CURRENT_MAX_MOTOR_PERCENT: AtomicU8 = AtomicU8::new(0);
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
@@ -143,7 +147,7 @@ async fn monitor_speed_pot(
                 .try_into()
                 .expect("Average of ADC readings is too large to fit into u16");
             dbg!("Average speed pot pin value: {}", avg_pin_value);
-            let duty_percent: u8 = map_range(
+            let max_duty_percent: u8 = map_range(
                 avg_pin_value,
                 MIN_ADC_VOLTAGE,
                 MAX_ADC_VOLTAGE,
@@ -151,8 +155,9 @@ async fn monitor_speed_pot(
                 MAX_MOTOR_DUTY_PERCENT.into(),
             )
             .try_into()
-            .expect("Duty percent is too large to fit into a u8");
-            dbg!("Duty percent: {}", duty_percent);
+            .expect("Max duty percent is too large to fit into u8");
+            dbg!("Max duty percent: {}", max_duty_percent);
+            CURRENT_MAX_MOTOR_PERCENT.store(max_duty_percent, Ordering::Relaxed);
         }
         ticker.next().await;
     }
