@@ -131,8 +131,9 @@ async fn main(spawner: Spawner) {
     spawner.must_spawn(monitor_speed_pot(adc1, speed_pot_pin));
     spawner.must_spawn(monitor_duration_pot(adc1, duration_pot_pin));
 
+    // Main loop
     let mut small_rng = SmallRng::seed_from_u64(1); // seed irrelevant for random number generation
-    let mut ticker = Ticker::every(Duration::from_millis(200));
+    let mut ticker = Ticker::every(Duration::from_millis(POTENTIOMETER_READ_INTERVAL.into()));
     for direction in [MotorDirection::Forward, MotorDirection::Reverse]
         .iter()
         .cycle()
@@ -140,10 +141,14 @@ async fn main(spawner: Spawner) {
         let start_time = Instant::now();
         let max_motor_percent = CURRENT_MAX_MOTOR_PERCENT.load(Ordering::Relaxed);
         let duty_percent = small_rng.gen_range(MIN_MOTOR_DUTY_PERCENT..=max_motor_percent);
+
+        let max_movement_duration = CURRENT_MAX_MOVEMENT_DURATION.load(Ordering::Relaxed);
+        let movement_duration_ms =
+            small_rng.gen_range(MIN_MOVEMENT_DURATION..=max_movement_duration);
+        let movement_duration = Duration::from_millis(movement_duration_ms.into());
+
         motor.start_movement(direction, duty_percent);
         DRASTIC_PARAMETER_CHANGE.store(false, Ordering::Relaxed);
-
-        let movement_duration = Duration::from_millis(2 * 1_000);
 
         while Instant::now().duration_since(start_time) >= movement_duration {
             ticker.next().await;
@@ -321,8 +326,8 @@ where
         }
     }
 
-    fn stop(&mut self) {
-        self.pwm_channel_forward.set_duty(0).unwrap();
-        self.pwm_channel_reverse.set_duty(0).unwrap();
-    }
+    // fn stop(&mut self) {
+    //     self.pwm_channel_forward.set_duty(0).unwrap();
+    //     self.pwm_channel_reverse.set_duty(0).unwrap();
+    // }
 }
