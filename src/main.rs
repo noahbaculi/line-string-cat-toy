@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -34,19 +34,19 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
 
-const NUM_ADC_SAMPLES: usize = 100;
-const MAX_ACTIVE_SEC: u64 = 10 * 60; // Number of seconds the device will be active before going to deep sleep
+const NUM_ADC_SAMPLES: usize = 100; // Number of ADC samples to average
+const MAX_ACTIVE_SEC: u16 = 10 * 60; // Number of seconds the device will be active before going to deep sleep
 const MIN_MOTOR_DUTY_PERCENT: u8 = 20;
 const MAX_MOTOR_DUTY_PERCENT: u8 = 100;
-const MIN_MOVEMENT_DURATION: u64 = 200; // ms
-const MAX_MOVEMENT_DURATION: u64 = 2_000; // ms
-const POTENTIOMETER_READ_INTERVAL: u64 = 200; // ms
+const MIN_MOVEMENT_DURATION: u16 = 200; // ms
+const MAX_MOVEMENT_DURATION: u16 = 2_000; // ms
+const POTENTIOMETER_READ_INTERVAL: u8 = 200; // ms
 
 const MIN_ADC_VOLTAGE: u16 = 0; // mV
 const MAX_ADC_VOLTAGE: u16 = 3000; // mV
 
 static CURRENT_MAX_MOTOR_PERCENT: AtomicU8 = AtomicU8::new(MIN_MOTOR_DUTY_PERCENT);
-static CURRENT_MAX_MOVEMENT_DURATION: AtomicU64 = AtomicU64::new(MIN_MOVEMENT_DURATION);
+static CURRENT_MAX_MOVEMENT_DURATION: AtomicU16 = AtomicU16::new(MIN_MOVEMENT_DURATION);
 static DRASTIC_PARAMETER_CHANGE: AtomicBool = AtomicBool::new(false);
 
 type RtcMutex = Mutex<CriticalSectionRawMutex, Rtc<'static>>;
@@ -159,7 +159,7 @@ async fn monitor_speed_pot(
     adc1_mutex: &'static Adc1Mutex,
     speed_pot_pin_mutex: &'static AdcPin0MutexForSpeed,
 ) {
-    let mut ticker = Ticker::every(Duration::from_millis(POTENTIOMETER_READ_INTERVAL));
+    let mut ticker = Ticker::every(Duration::from_millis(POTENTIOMETER_READ_INTERVAL.into()));
     let mut prev_max_duty_percent = MIN_MOTOR_DUTY_PERCENT;
     loop {
         debug!("Checking speed pot pin (#0)");
@@ -200,7 +200,7 @@ async fn monitor_duration_pot(
     adc1_mutex: &'static Adc1Mutex,
     duration_pot_pin_mutex: &'static AdcPin1MutexForDuration,
 ) {
-    let mut ticker = Ticker::every(Duration::from_millis(POTENTIOMETER_READ_INTERVAL));
+    let mut ticker = Ticker::every(Duration::from_millis(POTENTIOMETER_READ_INTERVAL.into()));
     let mut prev_max_duration = MIN_MOVEMENT_DURATION;
     loop {
         debug!("Checking duration pot pin (#1)");
@@ -215,9 +215,9 @@ async fn monitor_duration_pot(
                 .expect("Average of ADC readings is too large to fit into u16");
             dbg!("Average duration pot pin value: {}", avg_pin_value);
             let max_duration = map_range(
-                avg_pin_value.into(),
-                MIN_ADC_VOLTAGE.into(),
-                MAX_ADC_VOLTAGE.into(),
+                avg_pin_value,
+                MIN_ADC_VOLTAGE,
+                MAX_ADC_VOLTAGE,
                 MIN_MOVEMENT_DURATION,
                 MAX_MOVEMENT_DURATION,
             );
@@ -247,7 +247,7 @@ where
 
 #[embassy_executor::task]
 async fn deep_sleep_countdown(rtc: &'static RtcMutex) {
-    Timer::after(Duration::from_secs(MAX_ACTIVE_SEC)).await;
+    Timer::after(Duration::from_secs(MAX_ACTIVE_SEC.into())).await;
     info!("{} seconds passed, going to deep sleep", MAX_ACTIVE_SEC);
     rtc.lock().await.sleep_deep(&[]);
 }
