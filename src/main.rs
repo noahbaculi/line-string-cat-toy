@@ -87,8 +87,8 @@ async fn main(spawner: Spawner) {
     static RTC: StaticCell<RtcMutex> = StaticCell::new();
     let rtc = RTC.init(Mutex::new(Rtc::new(peripherals.LPWR, None)));
 
-    let motor_pwm_pin_forward = io.pins.gpio3;
-    let motor_pwm_pin_reverse = io.pins.gpio4;
+    let motor_pwm_pin_forward = io.pins.gpio2;
+    let motor_pwm_pin_reverse = io.pins.gpio3;
 
     // Instantiate PWM infra
     let mut ledc_pwm_controller = Ledc::new(peripherals.LEDC, &clocks);
@@ -150,9 +150,7 @@ async fn main(spawner: Spawner) {
         motor.start_movement(direction, duty_percent);
         debug!(
             "Movement started: {:?} @ {}% for {} ms",
-            direction,
-            duty_percent,
-            movement_duration.as_millis()
+            direction, duty_percent, movement_duration_ms
         );
         DRASTIC_PARAMETER_CHANGE.store(false, Ordering::Relaxed);
 
@@ -192,10 +190,10 @@ async fn monitor_speed_pot(
                 .try_into()
                 .expect("Average of ADC readings is too large to fit into u16");
             debug!("Average speed pot pin value: {}", avg_pin_value);
-            let max_duty_percent: u8 = map_range(
-                avg_pin_value,
-                MIN_ADC_VOLTAGE,
-                MAX_ADC_VOLTAGE,
+            let max_duty_percent = map_range(
+                avg_pin_value as u32,
+                MIN_ADC_VOLTAGE.into(),
+                MAX_ADC_VOLTAGE.into(),
                 MIN_MOTOR_DUTY_PERCENT.into(),
                 MAX_MOTOR_DUTY_PERCENT.into(),
             )
@@ -234,12 +232,14 @@ async fn monitor_duration_pot(
                 .expect("Average of ADC readings is too large to fit into u16");
             debug!("Average duration pot pin value: {}", avg_pin_value);
             let max_duration = map_range(
-                avg_pin_value,
-                MIN_ADC_VOLTAGE,
-                MAX_ADC_VOLTAGE,
-                MIN_MOVEMENT_DURATION,
-                MAX_MOVEMENT_DURATION,
-            );
+                avg_pin_value as u32,
+                MIN_ADC_VOLTAGE.into(),
+                MAX_ADC_VOLTAGE.into(),
+                MIN_MOVEMENT_DURATION.into(),
+                MAX_MOVEMENT_DURATION.into(),
+            )
+            .try_into()
+            .expect("Max duration is too large to fit into u16");
             debug!("Max duration: {}", max_duration);
             CURRENT_MAX_MOVEMENT_DURATION.store(max_duration, Ordering::Relaxed);
 
