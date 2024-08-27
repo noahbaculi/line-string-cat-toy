@@ -53,8 +53,9 @@ type RtcMutex = Mutex<CriticalSectionRawMutex, Rtc<'static>>;
 
 type Adc1Calibration = AdcCalLine<ADC1>;
 type Adc1Mutex = Mutex<CriticalSectionRawMutex, Adc<'static, ADC1>>;
-type SpeedAdcPinMutex = Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<0>, ADC1, Adc1Calibration>>;
-type DurationAdcPinMutex =
+type AdcPin0MutexForSpeed =
+    Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<0>, ADC1, Adc1Calibration>>;
+type AdcPin1MutexForDuration =
     Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<1>, ADC1, Adc1Calibration>>;
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
@@ -112,13 +113,13 @@ async fn main(spawner: Spawner) {
 
     // Instantiate ADC and mutexes
     let mut adc1_config = AdcConfig::new();
-    static SPEED_STATIC_CELL: StaticCell<SpeedAdcPinMutex> = StaticCell::new();
+    static SPEED_STATIC_CELL: StaticCell<AdcPin0MutexForSpeed> = StaticCell::new();
     let speed_pot_pin = SPEED_STATIC_CELL.init(Mutex::new(
         adc1_config
             .enable_pin_with_cal::<_, Adc1Calibration>(io.pins.gpio0, Attenuation::Attenuation11dB),
     ));
-    static TIME_STATIC_CELL: StaticCell<DurationAdcPinMutex> = StaticCell::new();
-    let _time_pot_pin = TIME_STATIC_CELL.init(Mutex::new(
+    static DURATION_STATIC_CELL: StaticCell<AdcPin1MutexForDuration> = StaticCell::new();
+    let duration_pot_pin = DURATION_STATIC_CELL.init(Mutex::new(
         adc1_config
             .enable_pin_with_cal::<_, Adc1Calibration>(io.pins.gpio1, Attenuation::Attenuation11dB),
     ));
@@ -128,6 +129,7 @@ async fn main(spawner: Spawner) {
 
     spawner.must_spawn(deep_sleep_countdown(rtc));
     spawner.must_spawn(monitor_speed_pot(adc1, speed_pot_pin));
+    spawner.must_spawn(monitor_duration_pot(adc1, duration_pot_pin));
 
     let mut small_rng = SmallRng::seed_from_u64(1); // seed irrelevant for random number generation
     let mut ticker = Ticker::every(Duration::from_millis(200));
@@ -155,7 +157,7 @@ async fn main(spawner: Spawner) {
 #[embassy_executor::task]
 async fn monitor_speed_pot(
     adc1_mutex: &'static Adc1Mutex,
-    speed_pot_pin_mutex: &'static SpeedAdcPinMutex,
+    speed_pot_pin_mutex: &'static AdcPin0MutexForSpeed,
 ) {
     let mut ticker = Ticker::every(Duration::from_millis(POTENTIOMETER_READ_INTERVAL));
     let mut prev_max_duty_percent = MIN_MOTOR_DUTY_PERCENT;
@@ -196,7 +198,7 @@ async fn monitor_speed_pot(
 #[embassy_executor::task]
 async fn monitor_duration_pot(
     adc1_mutex: &'static Adc1Mutex,
-    duration_pot_pin_mutex: &'static DurationAdcPinMutex,
+    duration_pot_pin_mutex: &'static AdcPin1MutexForDuration,
 ) {
     let mut ticker = Ticker::every(Duration::from_millis(POTENTIOMETER_READ_INTERVAL));
     let mut prev_max_duration = MIN_MOVEMENT_DURATION;
