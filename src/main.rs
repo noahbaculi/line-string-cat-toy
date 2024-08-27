@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -38,13 +38,24 @@ const NUM_ADC_SAMPLES: usize = 100;
 const MAX_ACTIVE_SEC: u64 = 10 * 60; // Number of seconds the device will be active before going to deep sleep
 const MIN_MOTOR_DUTY_PERCENT: u8 = 20;
 const MAX_MOTOR_DUTY_PERCENT: u8 = 100;
-const _MIN_MOVEMENT_TIME: Duration = Duration::from_millis(200);
-const _MAX_MOVEMENT_TIME: Duration = Duration::from_millis(2_500);
+const MIN_MOVEMENT_DURATION: u64 = 200; // ms
+const MAX_MOVEMENT_DURATION: u64 = 2_000; // ms
+const POTENTIOMETER_READ_INTERVAL: u64 = 200; // ms
 
 const MIN_ADC_VOLTAGE: u16 = 0; // mV
 const MAX_ADC_VOLTAGE: u16 = 3000; // mV
-                                   //
-static CURRENT_MAX_MOTOR_PERCENT: AtomicU8 = AtomicU8::new(0);
+
+static CURRENT_MAX_MOTOR_PERCENT: AtomicU8 = AtomicU8::new(MIN_MOTOR_DUTY_PERCENT);
+static CURRENT_MAX_MOVEMENT_DURATION: AtomicU64 = AtomicU64::new(MIN_MOVEMENT_DURATION);
+static DRASTIC_PARAMETER_CHANGE: AtomicBool = AtomicBool::new(false);
+
+type RtcMutex = Mutex<CriticalSectionRawMutex, Rtc<'static>>;
+
+type Adc1Calibration = AdcCalLine<ADC1>;
+type Adc1Mutex = Mutex<CriticalSectionRawMutex, Adc<'static, ADC1>>;
+type SpeedAdcPinMutex = Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<0>, ADC1, Adc1Calibration>>;
+type DurationAdcPinMutex =
+    Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<1>, ADC1, Adc1Calibration>>;
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
@@ -55,13 +66,6 @@ macro_rules! mk_static {
         x
     }};
 }
-
-type RtcMutex = Mutex<CriticalSectionRawMutex, Rtc<'static>>;
-
-type Adc1Calibration = AdcCalLine<ADC1>;
-type Adc1Mutex = Mutex<CriticalSectionRawMutex, Adc<'static, ADC1>>;
-type SpeedAdcPinMutex = Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<0>, ADC1, Adc1Calibration>>;
-type TimeAdcPinMutex = Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<1>, ADC1, Adc1Calibration>>;
 
 #[main]
 async fn main(spawner: Spawner) {
@@ -113,7 +117,7 @@ async fn main(spawner: Spawner) {
         adc1_config
             .enable_pin_with_cal::<_, Adc1Calibration>(io.pins.gpio0, Attenuation::Attenuation11dB),
     ));
-    static TIME_STATIC_CELL: StaticCell<TimeAdcPinMutex> = StaticCell::new();
+    static TIME_STATIC_CELL: StaticCell<DurationAdcPinMutex> = StaticCell::new();
     let _time_pot_pin = TIME_STATIC_CELL.init(Mutex::new(
         adc1_config
             .enable_pin_with_cal::<_, Adc1Calibration>(io.pins.gpio1, Attenuation::Attenuation11dB),
@@ -135,11 +139,15 @@ async fn main(spawner: Spawner) {
         let max_motor_percent = CURRENT_MAX_MOTOR_PERCENT.load(Ordering::Relaxed);
         let duty_percent = small_rng.gen_range(MIN_MOTOR_DUTY_PERCENT..=max_motor_percent);
         motor.start_movement(direction, duty_percent);
+        DRASTIC_PARAMETER_CHANGE.store(false, Ordering::Relaxed);
 
         let movement_duration = Duration::from_millis(2 * 1_000);
 
         while Instant::now().duration_since(start_time) >= movement_duration {
             ticker.next().await;
+            if DRASTIC_PARAMETER_CHANGE.load(Ordering::Relaxed) {
+                break; // Break the loop if there is a drastic parameter change
+            }
         }
     }
 }
@@ -149,7 +157,8 @@ async fn monitor_speed_pot(
     adc1_mutex: &'static Adc1Mutex,
     speed_pot_pin_mutex: &'static SpeedAdcPinMutex,
 ) {
-    let mut ticker = Ticker::every(Duration::from_millis(200));
+    let mut ticker = Ticker::every(Duration::from_millis(POTENTIOMETER_READ_INTERVAL));
+    let mut prev_max_duty_percent = MIN_MOTOR_DUTY_PERCENT;
     loop {
         debug!("Checking speed pot pin (#0)");
         {
@@ -173,6 +182,51 @@ async fn monitor_speed_pot(
             .expect("Max duty percent is too large to fit into u8");
             dbg!("Max duty percent: {}", max_duty_percent);
             CURRENT_MAX_MOTOR_PERCENT.store(max_duty_percent, Ordering::Relaxed);
+
+            if prev_max_duty_percent.abs_diff(max_duty_percent) > 10 {
+                DRASTIC_PARAMETER_CHANGE.store(true, Ordering::Relaxed);
+            }
+
+            prev_max_duty_percent = max_duty_percent;
+        }
+        ticker.next().await;
+    }
+}
+
+#[embassy_executor::task]
+async fn monitor_duration_pot(
+    adc1_mutex: &'static Adc1Mutex,
+    duration_pot_pin_mutex: &'static DurationAdcPinMutex,
+) {
+    let mut ticker = Ticker::every(Duration::from_millis(POTENTIOMETER_READ_INTERVAL));
+    let mut prev_max_duration = MIN_MOVEMENT_DURATION;
+    loop {
+        debug!("Checking duration pot pin (#1)");
+        {
+            let mut adc1 = adc1_mutex.lock().await;
+            let mut duration_pot_pin = duration_pot_pin_mutex.lock().await;
+            let avg_pin_value: u16 = ((0..NUM_ADC_SAMPLES)
+                .map(|_| nb::block!(adc1.read_oneshot(&mut duration_pot_pin)).unwrap() as u32)
+                .sum::<u32>()
+                / NUM_ADC_SAMPLES as u32)
+                .try_into()
+                .expect("Average of ADC readings is too large to fit into u16");
+            dbg!("Average duration pot pin value: {}", avg_pin_value);
+            let max_duration = map_range(
+                avg_pin_value.into(),
+                MIN_ADC_VOLTAGE.into(),
+                MAX_ADC_VOLTAGE.into(),
+                MIN_MOVEMENT_DURATION,
+                MAX_MOVEMENT_DURATION,
+            );
+            dbg!("Max duration: {}", max_duration);
+            CURRENT_MAX_MOVEMENT_DURATION.store(max_duration, Ordering::Relaxed);
+
+            if prev_max_duration.abs_diff(max_duration) > 10 {
+                DRASTIC_PARAMETER_CHANGE.store(true, Ordering::Relaxed);
+            }
+
+            prev_max_duration = max_duration;
         }
         ticker.next().await;
     }
