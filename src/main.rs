@@ -28,7 +28,6 @@ use esp_hal::{
     prelude::*,
     system::SystemControl,
 };
-use esp_println::dbg;
 use log::{debug, info};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -40,7 +39,7 @@ const MIN_MOTOR_DUTY_PERCENT: u8 = 20;
 const MAX_MOTOR_DUTY_PERCENT: u8 = 100;
 const MIN_MOVEMENT_DURATION: u16 = 200; // ms
 const MAX_MOVEMENT_DURATION: u16 = 2_000; // ms
-const POTENTIOMETER_READ_INTERVAL: u8 = 200; // ms
+const POTENTIOMETER_READ_INTERVAL: u16 = 200; // ms
 
 const MIN_ADC_VOLTAGE: u16 = 0; // mV
 const MAX_ADC_VOLTAGE: u16 = 3000; // mV
@@ -83,12 +82,13 @@ async fn main(spawner: Spawner) {
         ),
     );
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    info!("Hello!");
 
     static RTC: StaticCell<RtcMutex> = StaticCell::new();
     let rtc = RTC.init(Mutex::new(Rtc::new(peripherals.LPWR, None)));
 
-    let motor_pwm_pin_forward = io.pins.gpio18;
-    let motor_pwm_pin_reverse = io.pins.gpio19;
+    let motor_pwm_pin_forward = io.pins.gpio3;
+    let motor_pwm_pin_reverse = io.pins.gpio4;
 
     // Instantiate PWM infra
     let mut ledc_pwm_controller = Ledc::new(peripherals.LEDC, &clocks);
@@ -132,7 +132,7 @@ async fn main(spawner: Spawner) {
     spawner.must_spawn(monitor_duration_pot(adc1, duration_pot_pin));
 
     // Main loop
-    let mut small_rng = SmallRng::seed_from_u64(1); // seed irrelevant for random number generation
+    let mut small_rng = SmallRng::seed_from_u64(1); // Seed is irrelevant for random number generation
     let mut ticker = Ticker::every(Duration::from_millis(POTENTIOMETER_READ_INTERVAL.into()));
     for direction in [MotorDirection::Forward, MotorDirection::Reverse]
         .iter()
@@ -148,15 +148,29 @@ async fn main(spawner: Spawner) {
         let movement_duration = Duration::from_millis(movement_duration_ms.into());
 
         motor.start_movement(direction, duty_percent);
+        debug!(
+            "Movement started: {:?} @ {}% for {} ms",
+            direction,
+            duty_percent,
+            movement_duration.as_millis()
+        );
         DRASTIC_PARAMETER_CHANGE.store(false, Ordering::Relaxed);
 
-        while Instant::now().duration_since(start_time) >= movement_duration {
+        while Instant::now().duration_since(start_time) <= movement_duration {
             ticker.next().await;
             if DRASTIC_PARAMETER_CHANGE.load(Ordering::Relaxed) {
+                debug!("Drastic parameter change detected, breaking loop");
                 break; // Break the loop if there is a drastic parameter change
             }
         }
     }
+}
+
+#[embassy_executor::task]
+async fn deep_sleep_countdown(rtc: &'static RtcMutex) {
+    Timer::after(Duration::from_secs(MAX_ACTIVE_SEC.into())).await;
+    info!("{} seconds passed, going to deep sleep", MAX_ACTIVE_SEC);
+    rtc.lock().await.sleep_deep(&[]);
 }
 
 #[embassy_executor::task]
@@ -177,7 +191,7 @@ async fn monitor_speed_pot(
                 / NUM_ADC_SAMPLES as u32)
                 .try_into()
                 .expect("Average of ADC readings is too large to fit into u16");
-            dbg!("Average speed pot pin value: {}", avg_pin_value);
+            debug!("Average speed pot pin value: {}", avg_pin_value);
             let max_duty_percent: u8 = map_range(
                 avg_pin_value,
                 MIN_ADC_VOLTAGE,
@@ -187,7 +201,7 @@ async fn monitor_speed_pot(
             )
             .try_into()
             .expect("Max duty percent is too large to fit into u8");
-            dbg!("Max duty percent: {}", max_duty_percent);
+            debug!("Max duty percent: {}", max_duty_percent);
             CURRENT_MAX_MOTOR_PERCENT.store(max_duty_percent, Ordering::Relaxed);
 
             if prev_max_duty_percent.abs_diff(max_duty_percent) > 10 {
@@ -218,7 +232,7 @@ async fn monitor_duration_pot(
                 / NUM_ADC_SAMPLES as u32)
                 .try_into()
                 .expect("Average of ADC readings is too large to fit into u16");
-            dbg!("Average duration pot pin value: {}", avg_pin_value);
+            debug!("Average duration pot pin value: {}", avg_pin_value);
             let max_duration = map_range(
                 avg_pin_value,
                 MIN_ADC_VOLTAGE,
@@ -226,7 +240,7 @@ async fn monitor_duration_pot(
                 MIN_MOVEMENT_DURATION,
                 MAX_MOVEMENT_DURATION,
             );
-            dbg!("Max duration: {}", max_duration);
+            debug!("Max duration: {}", max_duration);
             CURRENT_MAX_MOVEMENT_DURATION.store(max_duration, Ordering::Relaxed);
 
             if prev_max_duration.abs_diff(max_duration) > 10 {
@@ -250,13 +264,7 @@ where
     ((in_value - in_min) * (out_max - out_min) / (in_max - in_min)) + out_min
 }
 
-#[embassy_executor::task]
-async fn deep_sleep_countdown(rtc: &'static RtcMutex) {
-    Timer::after(Duration::from_secs(MAX_ACTIVE_SEC.into())).await;
-    info!("{} seconds passed, going to deep sleep", MAX_ACTIVE_SEC);
-    rtc.lock().await.sleep_deep(&[]);
-}
-
+#[derive(Debug)]
 enum MotorDirection {
     Forward,
     Reverse,
