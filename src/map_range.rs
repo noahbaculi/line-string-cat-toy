@@ -13,12 +13,7 @@ pub fn map_range<T>(
     out_max: T,
 ) -> Result<T, MapRangeError>
 where
-    T: Copy
-        + core::ops::Mul<Output = T>
-        + core::ops::Add<Output = T>
-        + core::ops::Div<Output = T>
-        + core::ops::Sub<Output = T>
-        + num_traits::CheckedSub
+    T: num_traits::CheckedSub
         + num_traits::CheckedAdd
         + num_traits::CheckedMul
         + num_traits::CheckedDiv,
