@@ -1,6 +1,11 @@
 #![no_std]
 #![no_main]
 
+mod map_range;
+mod motor;
+
+use crate::map_range::map_range;
+use crate::motor::{Motor, MotorDirection};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -17,13 +22,12 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_hal::timer::{ErasedTimer, OneShotTimer};
 use esp_hal::{
     clock::ClockControl,
-    gpio::{Io, OutputPin},
+    gpio::Io,
     ledc::{
         channel,
-        timer::{self, TimerSpeed},
+        timer::{self},
         LSGlobalClkSource, Ledc, LowSpeed,
     },
-    peripheral::Peripheral,
     peripherals::Peripherals,
     prelude::*,
     system::SystemControl,
@@ -197,6 +201,7 @@ async fn monitor_speed_pot(
                 MIN_MOTOR_DUTY_PERCENT.into(),
                 MAX_MOTOR_DUTY_PERCENT.into(),
             )
+            .unwrap()
             .try_into()
             .expect("Max duty percent is too large to fit into u8");
             debug!("Max duty percent: {}", max_duty_percent);
@@ -238,6 +243,7 @@ async fn monitor_duration_pot(
                 MIN_MOVEMENT_DURATION.into(),
                 MAX_MOVEMENT_DURATION.into(),
             )
+            .unwrap()
             .try_into()
             .expect("Max duration is too large to fit into u16");
             debug!("Max duration: {}", max_duration);
@@ -251,91 +257,4 @@ async fn monitor_duration_pot(
         }
         ticker.next().await;
     }
-}
-
-fn map_range<T>(in_value: T, in_min: T, in_max: T, out_min: T, out_max: T) -> T
-where
-    T: Copy
-        + core::ops::Mul<Output = T>
-        + core::ops::Add<Output = T>
-        + core::ops::Div<Output = T>
-        + core::ops::Sub<Output = T>,
-{
-    ((in_value - in_min) * (out_max - out_min) / (in_max - in_min)) + out_min
-}
-
-#[derive(Debug)]
-enum MotorDirection {
-    Forward,
-    Reverse,
-}
-
-struct Motor<'a, S, O1, O2>
-where
-    S: TimerSpeed,
-    O1: OutputPin,
-    O2: OutputPin,
-{
-    pwm_channel_forward: channel::Channel<'a, S, O1>,
-    pwm_channel_reverse: channel::Channel<'a, S, O2>,
-}
-
-impl<'a, S, O1, O2> Motor<'a, S, O1, O2>
-where
-    S: TimerSpeed,
-    O1: OutputPin,
-    O2: OutputPin,
-{
-    fn new(
-        ledc_pwm_controller: &'a Ledc,
-        pwm_timer: &'a dyn TimerIFace<S>,
-        pwm_channel_forward_number: channel::Number,
-        pwm_channel_reverse_number: channel::Number,
-        pwm_pin_forward: impl Peripheral<P = O1> + 'a,
-        pwm_pin_reverse: impl Peripheral<P = O2> + 'a,
-    ) -> Self {
-        // Instantiate PWM channels
-        let mut pwm_channel_forward =
-            ledc_pwm_controller.get_channel(pwm_channel_forward_number, pwm_pin_forward);
-        pwm_channel_forward
-            .configure(channel::config::Config {
-                timer: pwm_timer,
-                duty_pct: 0,
-                pin_config: channel::config::PinConfig::PushPull,
-            })
-            .unwrap();
-
-        let mut pwm_channel_reverse =
-            ledc_pwm_controller.get_channel(pwm_channel_reverse_number, pwm_pin_reverse);
-        pwm_channel_reverse
-            .configure(channel::config::Config {
-                timer: pwm_timer,
-                duty_pct: 0,
-                pin_config: channel::config::PinConfig::PushPull,
-            })
-            .unwrap();
-
-        Self {
-            pwm_channel_forward,
-            pwm_channel_reverse,
-        }
-    }
-
-    fn start_movement(&mut self, direction: &MotorDirection, duty_percent: u8) {
-        match direction {
-            MotorDirection::Forward => {
-                self.pwm_channel_forward.set_duty(duty_percent).unwrap();
-                self.pwm_channel_reverse.set_duty(0).unwrap();
-            }
-            MotorDirection::Reverse => {
-                self.pwm_channel_forward.set_duty(0).unwrap();
-                self.pwm_channel_reverse.set_duty(duty_percent).unwrap();
-            }
-        }
-    }
-
-    // fn stop(&mut self) {
-    //     self.pwm_channel_forward.set_duty(0).unwrap();
-    //     self.pwm_channel_reverse.set_duty(0).unwrap();
-    // }
 }
