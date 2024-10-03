@@ -19,7 +19,7 @@ use esp_hal::ledc::timer::TimerIFace;
 use esp_hal::peripherals::ADC1;
 use esp_hal::rtc_cntl::Rtc;
 use esp_hal::timer::timg::TimerGroup;
-use esp_hal::timer::{ErasedTimer, OneShotTimer};
+use esp_hal::timer::ErasedTimer;
 use esp_hal::{
     clock::ClockControl,
     gpio::Io,
@@ -61,35 +61,25 @@ type AdcPin0MutexForSpeed =
 type AdcPin1MutexForDuration =
     Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<1>, ADC1, Adc1Calibration>>;
 
-// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
-
 #[main]
 async fn main(spawner: Spawner) {
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock80MHz).freeze();
     esp_println::logger::init_logger(log::LevelFilter::Debug);
-    let timer_grp = TimerGroup::new(peripherals.TIMG0, &clocks, None);
-    esp_hal_embassy::init(
-        &clocks,
-        mk_static!(
-            [OneShotTimer<ErasedTimer>; 1],
-            [OneShotTimer::new(timer_grp.timer0.into())]
-        ),
-    );
+
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    let timer0: ErasedTimer = timg0.timer0.into();
+    let timg1 = TimerGroup::new(peripherals.TIMG1, &clocks);
+    let timer1: ErasedTimer = timg1.timer0.into();
+
+    esp_hal_embassy::init(&clocks, [timer0, timer1]);
+
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     info!("Hello!");
 
     static RTC: StaticCell<RtcMutex> = StaticCell::new();
-    let rtc = RTC.init(Mutex::new(Rtc::new(peripherals.LPWR, None)));
+    let rtc = RTC.init(Mutex::new(Rtc::new(peripherals.LPWR)));
 
     let motor_pwm_pin_forward = io.pins.gpio2;
     let motor_pwm_pin_reverse = io.pins.gpio3;
