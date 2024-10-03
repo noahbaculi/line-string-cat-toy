@@ -41,10 +41,8 @@ macro_rules! mk_static {
     }};
 }
 
-// const SSID: &str = env!("SSID");
-const SSID: &str = "test";
-// const PASSWORD: &str = env!("PASSWORD");
-const PASSWORD: &str = "test";
+const SSID: &str = env!("WIFI_SSID");
+const PASSWORD: &str = env!("WIFI_PASSWORD");
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
