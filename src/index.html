@@ -1,0 +1,17 @@
+<html>
+  <body>
+    <h1>ESP32 Web Server</h1>
+    <p>Toggle State: <span id="state">{}</span></p>
+    <button onclick="toggle()">Toggle</button>
+    <script>
+      async function toggle() {{
+          await fetch('/toggle', {{ method: 'POST' }});
+      }}
+      setInterval(async function() {{
+          let response = await fetch('/state');
+          let data = await response.json();
+          document.getElementById('state').innerText = data.state;
+      }}, 5000);
+    </script>
+  </body>
+</html>
