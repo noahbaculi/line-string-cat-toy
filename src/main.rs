@@ -31,6 +31,10 @@ use esp_hal::{
     clock::ClockControl, peripherals::Peripherals, rng::Rng, system::SystemControl,
     timer::timg::TimerGroup,
 };
+use esp_hal::{
+    peripherals::WIFI,
+    timer::systimer::{SystemTimer, Target},
+};
 use esp_println::{dbg, println};
 use esp_wifi::{
     initialize,
@@ -38,7 +42,7 @@ use esp_wifi::{
         ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiStaDevice,
         WifiState,
     },
-    EspWifiInitFor,
+    EspWifiInitFor, EspWifiInitialization,
 };
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
@@ -88,19 +92,24 @@ async fn main(spawner: Spawner) -> ! {
     )
     .unwrap();
 
-    let wifi = peripherals.WIFI;
-    let (wifi_interface, controller) =
-        esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
-
-    use esp_hal::timer::systimer::{SystemTimer, Target};
     let systimer = SystemTimer::new(peripherals.SYSTIMER).split::<Target>();
     esp_hal_embassy::init(&clocks, systimer.alarm0);
 
-    let config = Config::dhcpv4(Default::default());
+    spawner.must_spawn(start_web_server(init, peripherals.WIFI));
 
-    let seed = 1234; // very random, very secure seed
+    loop {
+        todo!();
+    }
+}
+
+#[embassy_executor::task]
+async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
+    let (wifi_interface, controller) =
+        esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
 
     // Init network stack
+    let config = Config::dhcpv4(Default::default());
+    let seed = 1234; // very random, very secure seed
     let stack = &*mk_static!(
         Stack<WifiDevice<'_, WifiStaDevice>>,
         Stack::new(
@@ -111,8 +120,8 @@ async fn main(spawner: Spawner) -> ! {
         )
     );
 
-    spawner.spawn(connection(controller)).ok();
-    spawner.spawn(net_task(stack)).ok();
+    connection(controller).await;
+    stack.run().await;
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
@@ -206,7 +215,6 @@ async fn main(spawner: Spawner) -> ! {
     }
 }
 
-#[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>) {
     println!("start connection task");
     println!("Device capabilities: {:?}", controller.get_capabilities());
@@ -237,9 +245,4 @@ async fn connection(mut controller: WifiController<'static>) {
             }
         }
     }
-}
-
-#[embassy_executor::task]
-async fn net_task(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>) {
-    stack.run().await
 }
