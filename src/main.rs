@@ -13,9 +13,12 @@
 #![no_std]
 #![no_main]
 
+use core::str::from_utf8;
+
 use embassy_executor::Spawner;
 use embassy_net::{tcp::TcpSocket, Config, Ipv4Address, Stack, StackResources};
 use embassy_time::{Duration, Timer};
+use embedded_io_async::Write;
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl, peripherals::Peripherals, rng::Rng, system::SystemControl,
@@ -92,6 +95,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
+    let mut buf = [0; 4096];
 
     loop {
         if stack.is_link_up() {
@@ -116,24 +120,17 @@ async fn main(spawner: Spawner) -> ! {
 
         socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
 
-        let remote_endpoint = (Ipv4Address::new(142, 250, 185, 115), 80);
-        println!("connecting...");
-        let r = socket.connect(remote_endpoint).await;
-        if let Err(e) = r {
-            println!("connect error: {:?}", e);
+        let port_num = 80;
+
+        println!("Listening on TCP:{port_num}...");
+        if let Err(e) = socket.accept(port_num).await {
+            println!("accept error: {:?}", e);
             continue;
         }
-        println!("connected!");
-        let mut buf = [0; 1024];
+
+        println!("Received connection from {:?}", socket.remote_endpoint());
+
         loop {
-            use embedded_io_async::Write;
-            let r = socket
-                .write_all(b"GET / HTTP/1.0\r\nHost: www.mobile-j.de\r\n\r\n")
-                .await;
-            if let Err(e) = r {
-                println!("write error: {:?}", e);
-                break;
-            }
             let n = match socket.read(&mut buf).await {
                 Ok(0) => {
                     println!("read EOF");
@@ -145,9 +142,17 @@ async fn main(spawner: Spawner) -> ! {
                     break;
                 }
             };
-            println!("{}", core::str::from_utf8(&buf[..n]).unwrap());
+
+            println!("rxd {}", from_utf8(&buf[..n]).unwrap());
+
+            match socket.write_all(&buf[..n]).await {
+                Ok(()) => {}
+                Err(e) => {
+                    println!("write error: {:?}", e);
+                    break;
+                }
+            };
         }
-        Timer::after(Duration::from_millis(3000)).await;
     }
 }
 
