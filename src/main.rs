@@ -132,8 +132,6 @@ async fn main(spawner: Spawner) {
     spawner.must_spawn(start_web_server(init, peripherals.WIFI));
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    info!("Hello!");
-
     static RTC: StaticCell<RtcMutex> = StaticCell::new();
     let rtc = RTC.init(Mutex::new(Rtc::new(peripherals.LPWR)));
 
