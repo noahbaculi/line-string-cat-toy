@@ -1,15 +1,3 @@
-//! Embassy DHCP Example
-//!
-//!
-//! Set SSID and PASSWORD env variable before running this example.
-//!
-//! This gets an ip address via DHCP then performs an HTTP get request to some "random" server
-//!
-//! Because of the huge task-arena size configured this won't work on ESP32-S2
-
-//% FEATURES: async embassy embassy-generic-timers esp-wifi esp-wifi/async esp-wifi/embassy-net esp-wifi/wifi-default esp-wifi/wifi esp-wifi/utils
-//% CHIPS: esp32 esp32s3 esp32c2 esp32c3 esp32c6
-
 #![crate_type = "dylib"]
 #![no_std]
 #![no_main]
@@ -45,6 +33,11 @@ use esp_wifi::{
     EspWifiInitFor, EspWifiInitialization,
 };
 
+const SSID: &str = env!("WIFI_SSID");
+const PASSWORD: &str = env!("WIFI_PASSWORD");
+static TEST: AtomicBool = AtomicBool::new(false);
+const BUFFER_SIZE: usize = 4096; // Number of bytes allocated for buffers
+
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -66,10 +59,6 @@ fn init_heap() {
         ALLOCATOR.init(HEAP.as_mut_ptr() as *mut u8, HEAP_SIZE);
     }
 }
-
-const SSID: &str = env!("WIFI_SSID");
-const PASSWORD: &str = env!("WIFI_PASSWORD");
-static TEST: AtomicBool = AtomicBool::new(false);
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
@@ -123,9 +112,9 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
     connection(controller).await;
     stack.run().await;
 
-    let mut rx_buffer = [0; 4096];
-    let mut tx_buffer = [0; 4096];
-    let mut buf = [0; 4096];
+    let mut rx_buffer = [0; BUFFER_SIZE];
+    let mut tx_buffer = [0; BUFFER_SIZE];
+    let mut buf = [0; BUFFER_SIZE];
 
     loop {
         if stack.is_link_up() {
@@ -167,40 +156,50 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
         let request = from_utf8(&buf[..n]).unwrap_or("");
         dbg!(request);
 
-        let response = if request.starts_with("POST /toggle") {
-            let new_state = !TEST.load(Ordering::Relaxed);
-            TEST.store(new_state, Ordering::Relaxed);
-            println!("Toggle state changed: {}", new_state);
-            let body = format!("{{\"toggled\":{}}}", new_state);
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            )
-        } else if request.starts_with("GET /state") {
-            let body = format!("{{\"state\":{}}}", TEST.load(Ordering::Relaxed));
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            )
-        } else if request.starts_with("GET / ") {
-            let state = TEST.load(Ordering::Relaxed);
-            let html_template = include_str!("index.html");
-            let html_value = html_template.replace("{state}", &state.to_string());
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
-                html_value.len(),
-                html_value
-            )
-        } else {
-            let message = "Not Found";
-            format!(
-                "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\n\r\n{}",
-                message.len(),
-                message
-            )
+        let response = {
+            if request.starts_with("GET / ") {
+                let state = TEST.load(Ordering::Relaxed);
+                let html_template = include_str!("index.html");
+                let html_value = html_template.replace("{state}", &state.to_string());
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                    html_value.len(),
+                    html_value
+                )
+            } else if request.starts_with("POST /toggle") {
+                let new_state = !TEST.load(Ordering::Relaxed);
+                TEST.store(new_state, Ordering::Relaxed);
+                println!("Toggle state changed: {}", new_state);
+                let body = format!("{{\"toggled\":{}}}", new_state);
+                format!(
+                    "HTTP/2.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+            } else if request.starts_with("GET /state") {
+                let body = format!("{{\"state\":{}}}", TEST.load(Ordering::Relaxed));
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+            } else {
+                let message = "Not Found";
+                format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\n\r\n{}",
+                    message.len(),
+                    message
+                )
+            }
         };
+
+        if response.len() > BUFFER_SIZE {
+            println!(
+                "HTTP Response is too large. Truncating to {} bytes...",
+                BUFFER_SIZE
+            );
+            response = response[..BUFFER_SIZE].to_string();
+        }
 
         match socket.write_all(response.as_bytes()).await {
             Ok(_) => {
