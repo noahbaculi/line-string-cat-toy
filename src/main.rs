@@ -16,6 +16,7 @@
 #[macro_use]
 extern crate alloc;
 
+use alloc::string::ToString;
 use core::{
     mem::MaybeUninit,
     str::from_utf8,
@@ -30,7 +31,7 @@ use esp_hal::{
     clock::ClockControl, peripherals::Peripherals, rng::Rng, system::SystemControl,
     timer::timg::TimerGroup,
 };
-use esp_println::println;
+use esp_println::{dbg, println};
 use esp_wifi::{
     initialize,
     wifi::{
@@ -145,63 +146,48 @@ async fn main(spawner: Spawner) -> ! {
             continue;
         }
 
-        loop {
-            let n = match socket.read(&mut buf).await {
-                Ok(0) => continue,
-                Ok(n) => n,
-                Err(e) => {
-                    println!("read error: {:?}", e);
-                    continue;
+        let n = match socket.read(&mut buf).await {
+            Ok(0) => continue,
+            Ok(n) => n,
+            Err(e) => {
+                println!("read error: {:?}", e);
+                continue;
+            }
+        };
+
+        let request = from_utf8(&buf[..n]).unwrap_or("");
+        dbg!(request);
+
+        let response = if request.starts_with("POST /toggle") {
+            TEST.store(!TEST.load(Ordering::Relaxed), Ordering::Relaxed);
+            println!("Toggle state changed: {}", TEST.load(Ordering::Relaxed));
+            format!(
+            "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n{{\"toggled\":{}}}",
+            TEST.load(Ordering::Relaxed)
+        )
+        } else if request.starts_with("GET /state") {
+            let body = format!("{{\"state\":{}}}", TEST.load(Ordering::Relaxed));
+            format!(
+                "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+        } else {
+            "HTTP/1.0 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found".to_string()
+        };
+
+        match socket.write_all(response.as_bytes()).await {
+            Ok(_) => {
+                if let Err(e) = socket.flush().await {
+                    println!("flush error: {:?}", e);
                 }
-            };
-
-            let request = from_utf8(&buf[..n]).unwrap_or("");
-
-            // Check if request is a POST to update toggle state
-            if request.starts_with("POST /toggle") {
-                TEST.store(!TEST.load(Ordering::Relaxed), Ordering::Relaxed);
-                println!("Toggle state changed: {}", TEST.load(Ordering::Relaxed));
-                let response = b"HTTP/1.0 200 OK\r\n\r\n";
-                socket.write_all(response).await.ok();
-                socket.flush().await.ok();
-                break;
             }
-            // Serve current toggle state
-            else if request.starts_with("GET /state") {
-                let state = TEST.load(Ordering::Relaxed);
-                let response = format!("HTTP/1.0 200 OK\r\n\r\n{{ \"state\": {} }}", state);
-                socket.write_all(response.as_bytes()).await.ok();
-                socket.flush().await.ok();
-                break;
-            }
-            // Serve HTML page with polling
-            else {
-                let state = TEST.load(Ordering::Relaxed);
-                let html = format!(
-                    "HTTP/1.0 200 OK\r\n\r\n\
-                <html>\
-                    <body>\
-                        <h1>ESP32 Web Server</h1>\
-                        <p>Toggle State: <span id=\"state\">{}</span></p>\
-                        <form action=\"/toggle\" method=\"post\">\
-                            <button type=\"submit\">Toggle</button>\
-                        </form>\
-                        <script>\
-                            setInterval(async function() {{\
-                                let response = await fetch('/state');\
-                                let data = await response.json();\
-                                document.getElementById('state').innerText = data.state;\
-                            }}, 1000);\
-                        </script>\
-                    </body>\
-                </html>",
-                    state
-                );
-                socket.write_all(html.as_bytes()).await.ok();
-                socket.flush().await.ok();
-                break;
-            }
+            Err(e) => println!("write error: {:?}", e),
         }
+
+        // Give some time for the response to be sent before closing the socket
+        Timer::after(Duration::from_millis(100)).await;
+        socket.close();
     }
 }
 
