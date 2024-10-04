@@ -185,7 +185,12 @@ async fn main(spawner: Spawner) -> ! {
                 html_value
             )
         } else {
-            "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found".to_string()
+            let message = "Not Found";
+            format!(
+                "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\n\r\n{}",
+                message.len(),
+                message
+            )
         };
 
         match socket.write_all(response.as_bytes()).await {
