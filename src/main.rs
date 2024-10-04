@@ -145,7 +145,17 @@ async fn main(spawner: Spawner) -> ! {
 
             println!("rxd {}", from_utf8(&buf[..n]).unwrap());
 
-            match socket.write_all(&buf[..n]).await {
+            let html =  b"HTTP/1.0 200 OK\r\n\r\n\
+                    <html>\
+                        <body>\
+                            <h1>Hello Rust! Hello esp-wifi!</h1>\
+                            <img src=\"https://rustacean.net/more-crabby-things/dancing-ferris.gif\"/>
+                        </body>\
+                    </html>\r\n\
+                    ";
+
+            // match socket.write_all(&buf[..n]).await {
+            match socket.write_all(html).await {
                 Ok(()) => {}
                 Err(e) => {
                     println!("write error: {:?}", e);
