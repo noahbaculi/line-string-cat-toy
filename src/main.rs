@@ -23,7 +23,6 @@ use esp_hal::{
     peripherals::WIFI,
     timer::systimer::{SystemTimer, Target},
 };
-use esp_println::{dbg, println};
 use esp_wifi::{
     initialize,
     wifi::{
@@ -32,6 +31,7 @@ use esp_wifi::{
     },
     EspWifiInitFor, EspWifiInitialization,
 };
+use log::{debug, error, info};
 
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASSWORD");
@@ -63,6 +63,7 @@ fn init_heap() {
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
     esp_println::logger::init_logger_from_env();
+    info!("Started");
     init_heap();
 
     let peripherals = Peripherals::take();
@@ -123,10 +124,10 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
         Timer::after(Duration::from_millis(500)).await;
     }
 
-    println!("Waiting to get IP address...");
+    info!("Waiting to get IP address...");
     loop {
         if let Some(config) = stack.config_v4() {
-            println!("Got IP: {}", config.address);
+            info!("Got IP: {}", config.address);
             break;
         }
         Timer::after(Duration::from_millis(500)).await;
@@ -138,9 +139,9 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
         socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
         let port_num = 80;
 
-        println!("Listening on TCP:{port_num}...");
+        info!("Listening on TCP:{port_num}...");
         if let Err(e) = socket.accept(port_num).await {
-            println!("accept error: {:?}", e);
+            error!("Accept error: {:?}", e);
             continue;
         }
 
@@ -148,13 +149,13 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
             Ok(0) => continue,
             Ok(n) => n,
             Err(e) => {
-                println!("read error: {:?}", e);
+                error!("Read error: {:?}", e);
                 continue;
             }
         };
 
         let request = from_utf8(&buf[..n]).unwrap_or("");
-        dbg!(request);
+        debug!("Request: {}", request);
 
         let response = {
             if request.starts_with("GET / ") {
@@ -169,7 +170,7 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
             } else if request.starts_with("POST /toggle") {
                 let new_state = !TEST.load(Ordering::Relaxed);
                 TEST.store(new_state, Ordering::Relaxed);
-                println!("Toggle state changed: {}", new_state);
+                info!("Toggle state changed: {}", new_state);
                 let body = format!("{{\"toggled\":{}}}", new_state);
                 format!(
                     "HTTP/2.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -194,7 +195,7 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
         };
 
         if response.len() > BUFFER_SIZE {
-            println!(
+            error!(
                 "HTTP Response is too large. Truncating to {} bytes...",
                 BUFFER_SIZE
             );
@@ -204,10 +205,10 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
         match socket.write_all(response.as_bytes()).await {
             Ok(_) => {
                 if let Err(e) = socket.flush().await {
-                    println!("flush error: {:?}", e);
+                    error!("Flush error: {:?}", e);
                 }
             }
-            Err(e) => println!("write error: {:?}", e),
+            Err(e) => error!("Write error: {:?}", e),
         }
 
         socket.close();
@@ -215,8 +216,8 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
 }
 
 async fn connection(mut controller: WifiController<'static>) {
-    println!("start connection task");
-    println!("Device capabilities: {:?}", controller.get_capabilities());
+    info!("Starting wifi connection task");
+    debug!("Device capabilities: {:?}", controller.get_capabilities());
     loop {
         if WifiState::StaConnected == esp_wifi::wifi::get_wifi_state() {
             // wait until we're no longer connected
@@ -230,17 +231,16 @@ async fn connection(mut controller: WifiController<'static>) {
                 ..Default::default()
             });
             controller.set_configuration(&client_config).unwrap();
-            println!("Starting wifi");
             controller.start().await.unwrap();
-            println!("Wifi started!");
+            info!("Wifi started!");
         }
-        println!("About to connect...");
 
         match controller.connect().await {
-            Ok(_) => println!("Wifi connected!"),
+            Ok(_) => info!("Wifi connected!"),
             Err(e) => {
-                println!("Failed to connect to wifi: {e:?}");
-                Timer::after(Duration::from_millis(5000)).await
+                let retry_duration = Duration::from_millis(5000);
+                info!("Failed to connect to wifi: {e:?}. Retrying in {retry_duration}");
+                Timer::after(retry_duration).await
             }
         }
     }
