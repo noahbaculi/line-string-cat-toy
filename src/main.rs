@@ -175,6 +175,29 @@ async fn main(spawner: Spawner) -> ! {
                 body.len(),
                 body
             )
+        } else if request.starts_with("GET / ") {
+            let state = TEST.load(Ordering::Relaxed);
+            format!(
+                "HTTP/1.0 200 OK\r\n\r\n\
+                <html>\
+                    <body>\
+                        <h1>ESP32 Web Server</h1>\
+                        <p>Toggle State: <span id=\"state\">{}</span></p>\
+                        <button onclick=\"toggle()\">Toggle</button>\
+                        <script>\
+                            async function toggle() {{\
+                                await fetch('/toggle', {{ method: 'POST' }});\
+                            }}\
+                            setInterval(async function() {{\
+                                let response = await fetch('/state');\
+                                let data = await response.json();\
+                                document.getElementById('state').innerText = data.state;\
+                            }}, 5000);\
+                        </script>\
+                    </body>\
+                </html>",
+                state
+            )
         } else {
             "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found".to_string()
         };
