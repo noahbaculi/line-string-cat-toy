@@ -165,20 +165,36 @@ async fn main(spawner: Spawner) -> ! {
                 socket.write_all(response).await.ok();
                 socket.flush().await.ok();
                 break;
-            } else {
-                // Serve HTML page with the toggle button
+            }
+            // Serve current toggle state
+            else if request.starts_with("GET /state") {
+                let state = TEST.load(Ordering::Relaxed);
+                let response = format!("HTTP/1.0 200 OK\r\n\r\n{{ \"state\": {} }}", state);
+                socket.write_all(response.as_bytes()).await.ok();
+                socket.flush().await.ok();
+                break;
+            }
+            // Serve HTML page with polling
+            else {
                 let state = TEST.load(Ordering::Relaxed);
                 let html = format!(
                     "HTTP/1.0 200 OK\r\n\r\n\
-                    <html>\
-                        <body>\
-                            <h1>ESP32 Web Server</h1>\
-                            <p>Toggle State: {}</p>\
-                            <form action=\"/toggle\" method=\"post\">\
-                                <button type=\"submit\">Toggle</button>\
-                            </form>\
-                        </body>\
-                    </html>",
+                <html>\
+                    <body>\
+                        <h1>ESP32 Web Server</h1>\
+                        <p>Toggle State: <span id=\"state\">{}</span></p>\
+                        <form action=\"/toggle\" method=\"post\">\
+                            <button type=\"submit\">Toggle</button>\
+                        </form>\
+                        <script>\
+                            setInterval(async function() {{\
+                                let response = await fetch('/state');\
+                                let data = await response.json();\
+                                document.getElementById('state').innerText = data.state;\
+                            }}, 1000);\
+                        </script>\
+                    </body>\
+                </html>",
                     state
                 );
                 socket.write_all(html.as_bytes()).await.ok();
