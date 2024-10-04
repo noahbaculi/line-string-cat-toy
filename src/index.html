@@ -4,14 +4,27 @@
     <p>Toggle State: <span id="state">{}</span></p>
     <button onclick="toggle()">Toggle</button>
     <script>
-      async function toggle() {{
-          await fetch('/toggle', {{ method: 'POST' }});
-      }}
-      setInterval(async function() {{
-          let response = await fetch('/state');
-          let data = await response.json();
-          document.getElementById('state').innerText = data.state;
-      }}, 5000);
+      // Function to fetch and update the state on the webpage
+      async function updateState() {
+        let response = await fetch("/state");
+        let data = await response.json();
+        document.getElementById("state").innerText = data.state;
+      }
+
+      // Function to toggle the state
+      async function toggle() {
+        // Send POST request to toggle the state
+        await fetch("/toggle", { method: "POST" });
+
+        // Immediately fetch and update the current state after toggling
+        await updateState();
+      }
+
+      // Periodically refresh the state every 5 seconds
+      setInterval(updateState, 5000);
+
+      // Call updateState initially to load the current state on page load
+      updateState();
     </script>
   </body>
 </html>
