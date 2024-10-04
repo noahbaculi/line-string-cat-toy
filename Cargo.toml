@@ -46,6 +46,7 @@ esp-wifi = { version = "0.9.1", features = [
     "utils",
 ] }
 embedded-io-async = "0.6.1"
+esp-alloc = "0.4.0"
 
 [profile.dev]
 # Rust debug is too slow.

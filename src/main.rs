@@ -10,13 +10,19 @@
 //% FEATURES: async embassy embassy-generic-timers esp-wifi esp-wifi/async esp-wifi/embassy-net esp-wifi/wifi-default esp-wifi/wifi esp-wifi/utils
 //% CHIPS: esp32 esp32s3 esp32c2 esp32c3 esp32c6
 
+#![crate_type = "dylib"]
 #![no_std]
 #![no_main]
+#[macro_use]
+extern crate alloc;
 
-use core::str::from_utf8;
-
+use core::{
+    mem::MaybeUninit,
+    str::from_utf8,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use embassy_executor::Spawner;
-use embassy_net::{tcp::TcpSocket, Config, Ipv4Address, Stack, StackResources};
+use embassy_net::{tcp::TcpSocket, Config, Stack, StackResources};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
 use esp_backtrace as _;
@@ -44,12 +50,26 @@ macro_rules! mk_static {
     }};
 }
 
+#[global_allocator]
+static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
+
+fn init_heap() {
+    const HEAP_SIZE: usize = 32 * 1024;
+    static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
+
+    unsafe {
+        ALLOCATOR.init(HEAP.as_mut_ptr() as *mut u8, HEAP_SIZE);
+    }
+}
+
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASSWORD");
+static TEST: AtomicBool = AtomicBool::new(false);
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
     esp_println::logger::init_logger_from_env();
+    init_heap();
 
     let peripherals = Peripherals::take();
 
@@ -115,11 +135,8 @@ async fn main(spawner: Spawner) -> ! {
 
     loop {
         Timer::after(Duration::from_millis(1_000)).await;
-
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-
         socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
-
         let port_num = 80;
 
         println!("Listening on TCP:{port_num}...");
@@ -128,40 +145,46 @@ async fn main(spawner: Spawner) -> ! {
             continue;
         }
 
-        println!("Received connection from {:?}", socket.remote_endpoint());
-
         loop {
             let n = match socket.read(&mut buf).await {
-                Ok(0) => {
-                    println!("read EOF");
-                    break;
-                }
+                Ok(0) => continue,
                 Ok(n) => n,
                 Err(e) => {
                     println!("read error: {:?}", e);
-                    break;
+                    continue;
                 }
             };
 
-            println!("rxd {}", from_utf8(&buf[..n]).unwrap());
+            let request = from_utf8(&buf[..n]).unwrap_or("");
 
-            let html =  b"HTTP/1.0 200 OK\r\n\r\n\
+            // Check if request is a POST to update toggle state
+            if request.starts_with("POST /toggle") {
+                TEST.store(!TEST.load(Ordering::Relaxed), Ordering::Relaxed);
+                println!("Toggle state changed: {}", TEST.load(Ordering::Relaxed));
+                let response = b"HTTP/1.0 200 OK\r\n\r\n";
+                socket.write_all(response).await.ok();
+                socket.flush().await.ok();
+                break;
+            } else {
+                // Serve HTML page with the toggle button
+                let state = TEST.load(Ordering::Relaxed);
+                let html = format!(
+                    "HTTP/1.0 200 OK\r\n\r\n\
                     <html>\
                         <body>\
-                            <h1>Hello Rust! Hello esp-wifi!</h1>\
-                            <img src=\"https://rustacean.net/more-crabby-things/dancing-ferris.gif\"/>
+                            <h1>ESP32 Web Server</h1>\
+                            <p>Toggle State: {}</p>\
+                            <form action=\"/toggle\" method=\"post\">\
+                                <button type=\"submit\">Toggle</button>\
+                            </form>\
                         </body>\
-                    </html>\r\n\
-                    ";
-
-            // match socket.write_all(&buf[..n]).await {
-            match socket.write_all(html).await {
-                Ok(()) => {}
-                Err(e) => {
-                    println!("write error: {:?}", e);
-                    break;
-                }
-            };
+                    </html>",
+                    state
+                );
+                socket.write_all(html.as_bytes()).await.ok();
+                socket.flush().await.ok();
+                break;
+            }
         }
     }
 }
