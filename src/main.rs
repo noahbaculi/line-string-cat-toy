@@ -159,21 +159,24 @@ async fn main(spawner: Spawner) -> ! {
         dbg!(request);
 
         let response = if request.starts_with("POST /toggle") {
-            TEST.store(!TEST.load(Ordering::Relaxed), Ordering::Relaxed);
-            println!("Toggle state changed: {}", TEST.load(Ordering::Relaxed));
+            let new_state = !TEST.load(Ordering::Relaxed);
+            TEST.store(new_state, Ordering::Relaxed);
+            println!("Toggle state changed: {}", new_state);
+            let body = format!("{{\"toggled\":{}}}", new_state);
             format!(
-            "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n{{\"toggled\":{}}}",
-            TEST.load(Ordering::Relaxed)
-        )
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
         } else if request.starts_with("GET /state") {
             let body = format!("{{\"state\":{}}}", TEST.load(Ordering::Relaxed));
             format!(
-                "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),
                 body
             )
         } else {
-            "HTTP/1.0 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found".to_string()
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found".to_string()
         };
 
         match socket.write_all(response.as_bytes()).await {
@@ -185,8 +188,6 @@ async fn main(spawner: Spawner) -> ! {
             Err(e) => println!("write error: {:?}", e),
         }
 
-        // Give some time for the response to be sent before closing the socket
-        Timer::after(Duration::from_millis(100)).await;
         socket.close();
     }
 }
