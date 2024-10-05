@@ -1,24 +1,37 @@
 #![crate_type = "dylib"]
 #![no_std]
 #![no_main]
+
 #[macro_use]
 extern crate alloc;
 
+mod map_range;
+mod motor;
+
+use crate::map_range::map_range;
+use crate::motor::{Motor, MotorDirection};
 use alloc::string::ToString;
-use core::{
-    mem::MaybeUninit,
-    str::from_utf8,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
+use core::{mem::MaybeUninit, str::from_utf8};
 use embassy_executor::Spawner;
 use embassy_net::{tcp::TcpSocket, Config, Stack, StackResources};
-use embassy_time::{Duration, Timer};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_io_async::Write;
 use esp_backtrace as _;
 use esp_hal::timer::systimer::{SystemTimer, Target};
 use esp_hal::{
-    clock::ClockControl, peripherals::Peripherals, rng::Rng, system::SystemControl,
-    timer::timg::TimerGroup,
+    clock::ClockControl,
+    gpio::Io,
+    ledc::{
+        channel,
+        timer::{self},
+        LSGlobalClkSource, Ledc, LowSpeed,
+    },
+    peripherals::Peripherals,
+    prelude::*,
+    system::SystemControl,
 };
 use esp_wifi::{
     initialize,
@@ -29,12 +42,38 @@ use esp_wifi::{
     EspWifiInitFor,
 };
 use log::{debug, error, info};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
+use static_cell::StaticCell;
 
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASSWORD");
 static TEST: AtomicBool = AtomicBool::new(false);
 const BUFFER_SIZE: usize = 4096; // Number of bytes allocated for buffers
 
+const NUM_ADC_SAMPLES: usize = 100; // Number of ADC samples to average
+const MAX_ACTIVE_SEC: u16 = 10 * 60; // Number of seconds the device will be active before going to deep sleep
+const MIN_MOTOR_DUTY_PERCENT: u8 = 20;
+const MAX_MOTOR_DUTY_PERCENT: u8 = 100;
+const MIN_MOVEMENT_DURATION: u16 = 200; // ms
+const MAX_MOVEMENT_DURATION: u16 = 2_000; // ms
+const POTENTIOMETER_READ_INTERVAL: u16 = 200; // ms
+
+const MIN_ADC_VOLTAGE: u16 = 0; // mV
+const MAX_ADC_VOLTAGE: u16 = 3000; // mV
+
+static CURRENT_MAX_MOTOR_PERCENT: AtomicU8 = AtomicU8::new(MIN_MOTOR_DUTY_PERCENT);
+static CURRENT_MAX_MOVEMENT_DURATION: AtomicU16 = AtomicU16::new(MIN_MOVEMENT_DURATION);
+static DRASTIC_PARAMETER_CHANGE: AtomicBool = AtomicBool::new(false);
+
+type RtcMutex = Mutex<CriticalSectionRawMutex, Rtc<'static>>;
+
+type Adc1Calibration = AdcCalLine<ADC1>;
+type Adc1Mutex = Mutex<CriticalSectionRawMutex, Adc<'static, ADC1>>;
+type AdcPin0MutexForSpeed =
+    Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<0>, ADC1, Adc1Calibration>>;
+type AdcPin1MutexForDuration =
+    Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<1>, ADC1, Adc1Calibration>>;
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -64,16 +103,17 @@ async fn main(spawner: Spawner) {
     init_heap();
 
     let peripherals = Peripherals::take();
-
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::max(system.clock_control).freeze();
-
     let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+
+    let systimer = SystemTimer::new(peripherals.SYSTIMER).split::<Target>();
+    esp_hal_embassy::init(&clocks, systimer.alarm0);
 
     let init = initialize(
         EspWifiInitFor::Wifi,
         timg0.timer0,
-        Rng::new(peripherals.RNG),
+        esp_hal::rng::Rng::new(peripherals.RNG),
         peripherals.RADIO_CLK,
         &clocks,
     )
