@@ -16,7 +16,10 @@
         // Send POST request to toggle the state
         await fetch("/toggle", { method: "POST" });
 
-        // Immediately fetch and update the current state after toggling
+        // Add small delay to avoid overwhelming server
+        await new Promise((resolve) => setTimeout(resolve, 300));
+
+        // Fetch and update the current state after toggling
         await updateState();
       }
 

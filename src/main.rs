@@ -149,10 +149,6 @@ async fn main(spawner: Spawner) {
     spawner.must_spawn(start_web_server(stack));
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-
-    Timer::after(Duration::from_secs(5)).await;
-    info!("Initializing RTC");
-
     let motor_pwm_pin_forward = io.pins.gpio2;
     let motor_pwm_pin_reverse = io.pins.gpio3;
 
@@ -348,12 +344,14 @@ async fn start_web_server(stack: &'static Stack<WifiDevice<'static, WifiStaDevic
     let port_num = 80;
     info!("Listening on TCP:{port_num}...");
     loop {
-        Timer::after(Duration::from_millis(300)).await;
+        Timer::after(Duration::from_millis(50)).await;
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
         socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
 
         if let Err(e) = socket.accept(port_num).await {
             error!("Accept error: {:?}", e);
+            socket.close(); // close the socket after error
+            Timer::after(Duration::from_millis(800)).await;
             continue;
         }
 
@@ -362,12 +360,14 @@ async fn start_web_server(stack: &'static Stack<WifiDevice<'static, WifiStaDevic
             Ok(n) => n,
             Err(e) => {
                 error!("Read error: {:?}", e);
+                socket.close(); // close the socket after error
+                Timer::after(Duration::from_millis(800)).await;
                 continue;
             }
         };
 
         let request = from_utf8(&buf[..n]).unwrap_or("");
-        debug!("Request: {}", request);
+        info!("Request: {}", request);
 
         let mut response = {
             if request.starts_with("GET / ") {
