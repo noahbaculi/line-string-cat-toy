@@ -1,7 +1,6 @@
 #![crate_type = "dylib"]
 #![no_std]
 #![no_main]
-
 #[macro_use]
 extern crate alloc;
 
@@ -20,9 +19,11 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_io_async::Write;
 use esp_backtrace as _;
+use esp_backtrace as _;
 use esp_hal::analog::adc::{Adc, AdcCalLine, AdcConfig, AdcPin, Attenuation};
 use esp_hal::gpio::GpioPin;
-use esp_hal::peripherals::ADC1;
+use esp_hal::ledc::timer::TimerIFace;
+use esp_hal::peripherals::{ADC1, LPWR};
 use esp_hal::rtc_cntl::Rtc;
 use esp_hal::timer::systimer::{SystemTimer, Target};
 use esp_hal::timer::timg::TimerGroup;
@@ -50,7 +51,6 @@ use log::{debug, error, info};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASSWORD");
 static TEST: AtomicBool = AtomicBool::new(false);
@@ -71,14 +71,13 @@ static CURRENT_MAX_MOTOR_PERCENT: AtomicU8 = AtomicU8::new(MIN_MOTOR_DUTY_PERCEN
 static CURRENT_MAX_MOVEMENT_DURATION: AtomicU16 = AtomicU16::new(MIN_MOVEMENT_DURATION);
 static DRASTIC_PARAMETER_CHANGE: AtomicBool = AtomicBool::new(false);
 
-type RtcMutex = Mutex<CriticalSectionRawMutex, Rtc<'static>>;
-
 type Adc1Calibration = AdcCalLine<ADC1>;
 type Adc1Mutex = Mutex<CriticalSectionRawMutex, Adc<'static, ADC1>>;
 type AdcPin0MutexForSpeed =
     Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<0>, ADC1, Adc1Calibration>>;
 type AdcPin1MutexForDuration =
     Mutex<CriticalSectionRawMutex, AdcPin<GpioPin<1>, ADC1, Adc1Calibration>>;
+
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -103,17 +102,16 @@ fn init_heap() {
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    esp_println::logger::init_logger_from_env();
+    esp_println::logger::init_logger(log::LevelFilter::Info);
     info!("Started");
     init_heap();
 
     let peripherals = Peripherals::take();
+
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::max(system.clock_control).freeze();
-    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
 
-    let systimer = SystemTimer::new(peripherals.SYSTIMER).split::<Target>();
-    esp_hal_embassy::init(&clocks, systimer.alarm0);
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
 
     let init = initialize(
         EspWifiInitFor::Wifi,
@@ -123,6 +121,9 @@ async fn main(spawner: Spawner) {
         &clocks,
     )
     .unwrap();
+
+    let systimer = SystemTimer::new(peripherals.SYSTIMER).split::<Target>();
+    esp_hal_embassy::init(&clocks, systimer.alarm0);
 
     let wifi = peripherals.WIFI;
     let (wifi_interface, controller) =
@@ -146,8 +147,6 @@ async fn main(spawner: Spawner) {
     spawner.must_spawn(start_web_server(stack));
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    static RTC: StaticCell<RtcMutex> = StaticCell::new();
-    let rtc = RTC.init(Mutex::new(Rtc::new(peripherals.LPWR)));
 
     let motor_pwm_pin_forward = io.pins.gpio2;
     let motor_pwm_pin_reverse = io.pins.gpio3;
@@ -189,7 +188,8 @@ async fn main(spawner: Spawner) {
     static ADC1_MUTEX: StaticCell<Adc1Mutex> = StaticCell::new();
     let adc1 = ADC1_MUTEX.init(Mutex::new(adc1));
 
-    spawner.must_spawn(deep_sleep_countdown(rtc));
+    let low_power_peripheral = peripherals.LPWR;
+    spawner.must_spawn(deep_sleep_countdown(low_power_peripheral));
     spawner.must_spawn(monitor_speed_pot(adc1, speed_pot_pin));
     spawner.must_spawn(monitor_duration_pot(adc1, duration_pot_pin));
 
@@ -227,10 +227,11 @@ async fn main(spawner: Spawner) {
 }
 
 #[embassy_executor::task]
-async fn deep_sleep_countdown(rtc: &'static RtcMutex) {
+async fn deep_sleep_countdown(low_power_peripheral: LPWR) {
     Timer::after(Duration::from_secs(MAX_ACTIVE_SEC.into())).await;
     info!("{} seconds passed, going to deep sleep", MAX_ACTIVE_SEC);
-    rtc.lock().await.sleep_deep(&[]);
+    let mut rtc = Rtc::new(low_power_peripheral);
+    rtc.sleep_deep(&[]);
 }
 
 #[embassy_executor::task]
@@ -339,13 +340,13 @@ async fn start_web_server(stack: &'static Stack<WifiDevice<'static, WifiStaDevic
         Timer::after(Duration::from_millis(500)).await;
     }
 
+    let port_num = 80;
+    info!("Listening on TCP:{port_num}...");
     loop {
-        Timer::after(Duration::from_millis(1_000)).await;
+        Timer::after(Duration::from_millis(300)).await;
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
         socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
-        let port_num = 80;
 
-        info!("Listening on TCP:{port_num}...");
         if let Err(e) = socket.accept(port_num).await {
             error!("Accept error: {:?}", e);
             continue;
@@ -424,7 +425,7 @@ async fn start_web_server(stack: &'static Stack<WifiDevice<'static, WifiStaDevic
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>) {
     info!("Starting wifi connection task");
-    debug!("Device capabilities: {:?}", controller.get_capabilities());
+    info!("Device capabilities: {:?}", controller.get_capabilities());
     loop {
         if WifiState::StaConnected == esp_wifi::wifi::get_wifi_state() {
             // wait until we're no longer connected
