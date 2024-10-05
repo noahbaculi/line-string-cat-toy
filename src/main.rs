@@ -15,13 +15,10 @@ use embassy_net::{tcp::TcpSocket, Config, Stack, StackResources};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
 use esp_backtrace as _;
+use esp_hal::timer::systimer::{SystemTimer, Target};
 use esp_hal::{
     clock::ClockControl, peripherals::Peripherals, rng::Rng, system::SystemControl,
     timer::timg::TimerGroup,
-};
-use esp_hal::{
-    peripherals::WIFI,
-    timer::systimer::{SystemTimer, Target},
 };
 use esp_wifi::{
     initialize,
@@ -29,7 +26,7 @@ use esp_wifi::{
         ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiStaDevice,
         WifiState,
     },
-    EspWifiInitFor, EspWifiInitialization,
+    EspWifiInitFor,
 };
 use log::{debug, error, info};
 
@@ -61,7 +58,7 @@ fn init_heap() {
 }
 
 #[esp_hal_embassy::main]
-async fn main(spawner: Spawner) -> ! {
+async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
     info!("Started");
     init_heap();
@@ -85,15 +82,7 @@ async fn main(spawner: Spawner) -> ! {
     let systimer = SystemTimer::new(peripherals.SYSTIMER).split::<Target>();
     esp_hal_embassy::init(&clocks, systimer.alarm0);
 
-    spawner.must_spawn(start_web_server(init, peripherals.WIFI));
-
-    loop {
-        todo!();
-    }
-}
-
-#[embassy_executor::task]
-async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
+    let wifi = peripherals.WIFI;
     let (wifi_interface, controller) =
         esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
 
@@ -110,9 +99,13 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
         )
     );
 
-    connection(controller).await;
-    stack.run().await;
+    spawner.spawn(connection(controller)).ok();
+    spawner.must_spawn(net_task(stack));
+    spawner.must_spawn(start_web_server(stack));
+}
 
+#[embassy_executor::task]
+async fn start_web_server(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>) {
     let mut rx_buffer = [0; BUFFER_SIZE];
     let mut tx_buffer = [0; BUFFER_SIZE];
     let mut buf = [0; BUFFER_SIZE];
@@ -157,7 +150,7 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
         let request = from_utf8(&buf[..n]).unwrap_or("");
         debug!("Request: {}", request);
 
-        let response = {
+        let mut response = {
             if request.starts_with("GET / ") {
                 let state = TEST.load(Ordering::Relaxed);
                 let html_template = include_str!("index.html");
@@ -215,6 +208,7 @@ async fn start_web_server(init: EspWifiInitialization, wifi: WIFI) {
     }
 }
 
+#[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>) {
     info!("Starting wifi connection task");
     debug!("Device capabilities: {:?}", controller.get_capabilities());
@@ -239,9 +233,17 @@ async fn connection(mut controller: WifiController<'static>) {
             Ok(_) => info!("Wifi connected!"),
             Err(e) => {
                 let retry_duration = Duration::from_millis(5000);
-                info!("Failed to connect to wifi: {e:?}. Retrying in {retry_duration}");
+                info!(
+                    "Failed to connect to wifi: {e:?}. Retrying in {}ms",
+                    retry_duration.as_millis()
+                );
                 Timer::after(retry_duration).await
             }
         }
     }
+}
+
+#[embassy_executor::task]
+async fn net_task(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>) {
+    stack.run().await
 }
