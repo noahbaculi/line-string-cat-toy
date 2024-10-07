@@ -136,7 +136,7 @@ async fn main(spawner: Spawner) {
         Stack::new(
             wifi_interface,
             config,
-            mk_static!(StackResources<3>, StackResources::<3>::new()),
+            mk_static!(StackResources<6>, StackResources::<6>::new()),
             seed
         )
     );
@@ -420,7 +420,9 @@ async fn start_web_server(stack: &'static Stack<WifiDevice<'static, WifiStaDevic
             Err(e) => error!("Write error: {:?}", e),
         }
 
-        socket.close();
+        if !request.contains("Connection: keep-alive") {
+            socket.close();
+        }
     }
 }
 
