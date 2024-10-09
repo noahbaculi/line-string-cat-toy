@@ -49,7 +49,9 @@ use esp_wifi::{
 use log::{debug, error, info};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use serde::Serialize;
 use static_cell::StaticCell;
+
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASSWORD");
 static TEST: AtomicBool = AtomicBool::new(false);
@@ -66,9 +68,34 @@ const POTENTIOMETER_READ_INTERVAL: u16 = 200; // ms
 const MIN_ADC_VOLTAGE: u16 = 0; // mV
 const MAX_ADC_VOLTAGE: u16 = 3000; // mV
 
-static CURRENT_MAX_MOTOR_PERCENT: AtomicU8 = AtomicU8::new(MIN_MOTOR_DUTY_PERCENT);
+static CURRENT_MAX_MOTOR_DUTY_PERCENT: AtomicU8 = AtomicU8::new(MIN_MOTOR_DUTY_PERCENT);
 static CURRENT_MAX_MOVEMENT_DURATION: AtomicU16 = AtomicU16::new(MIN_MOVEMENT_DURATION);
 static DRASTIC_PARAMETER_CHANGE: AtomicBool = AtomicBool::new(false);
+
+#[derive(Serialize)]
+struct CurrentState {
+    pub min_duty_percent: u8,
+    pub max_duty_percent: u8,
+    pub min_movement_duration: u16,
+    pub max_movement_duration: u16,
+    pub current_max_motor_duty_percent: u8,
+    pub current_max_movement_duration: u16,
+}
+const CURRENT_STATE_SERIALIZED_LEN: usize = 300;
+impl CurrentState {
+    pub fn get_json_str() -> serde_json_core::heapless::String<CURRENT_STATE_SERIALIZED_LEN> {
+        let current_state = Self {
+            min_duty_percent: MIN_MOTOR_DUTY_PERCENT,
+            max_duty_percent: MAX_MOTOR_DUTY_PERCENT,
+            min_movement_duration: MIN_MOVEMENT_DURATION,
+            max_movement_duration: MAX_MOVEMENT_DURATION,
+            current_max_motor_duty_percent: CURRENT_MAX_MOTOR_DUTY_PERCENT.load(Ordering::Relaxed),
+            current_max_movement_duration: CURRENT_MAX_MOVEMENT_DURATION.load(Ordering::Relaxed),
+        };
+
+        serde_json_core::to_string(&current_state).unwrap()
+    }
+}
 
 type Adc1Calibration = AdcCalLine<ADC1>;
 type Adc1Mutex = Mutex<CriticalSectionRawMutex, Adc<'static, ADC1>>;
@@ -141,9 +168,9 @@ async fn main(spawner: Spawner) {
         )
     );
 
-    spawner.spawn(connection(controller)).ok();
-    spawner.must_spawn(net_task(stack));
-    spawner.must_spawn(start_web_server(stack));
+    // spawner.spawn(connection(controller)).ok();
+    // spawner.must_spawn(net_task(stack));
+    // spawner.must_spawn(start_web_server(stack));
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let motor_pwm_pin_forward = io.pins.gpio2;
@@ -199,7 +226,7 @@ async fn main(spawner: Spawner) {
         .cycle()
     {
         let start_time = Instant::now();
-        let max_motor_percent = CURRENT_MAX_MOTOR_PERCENT.load(Ordering::Relaxed);
+        let max_motor_percent = CURRENT_MAX_MOTOR_DUTY_PERCENT.load(Ordering::Relaxed);
         let duty_percent = small_rng.gen_range(MIN_MOTOR_DUTY_PERCENT..=max_motor_percent);
 
         let max_movement_duration = CURRENT_MAX_MOVEMENT_DURATION.load(Ordering::Relaxed);
@@ -262,7 +289,7 @@ async fn monitor_speed_pot(
             .try_into()
             .expect("Max duty percent is too large to fit into u8");
             debug!("Max duty percent: {}", max_duty_percent);
-            CURRENT_MAX_MOTOR_PERCENT.store(max_duty_percent, Ordering::Relaxed);
+            CURRENT_MAX_MOTOR_DUTY_PERCENT.store(max_duty_percent, Ordering::Relaxed);
 
             if prev_max_duty_percent.abs_diff(max_duty_percent) > 10 {
                 DRASTIC_PARAMETER_CHANGE.store(true, Ordering::Relaxed);
@@ -380,16 +407,16 @@ async fn start_web_server(stack: &'static Stack<WifiDevice<'static, WifiStaDevic
                 let new_state = !TEST.load(Ordering::Relaxed);
                 TEST.store(new_state, Ordering::Relaxed);
                 info!("Toggle state changed: {}", new_state);
-                let body = format!("{{\"toggled\":{}}}", new_state);
+                let body = CurrentState::get_json_str();
                 format!(
                     "HTTP/2.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                     body.len(),
                     body
                 )
             } else if request.starts_with("GET /state") {
-                let body = format!("{{\"state\":{}}}", TEST.load(Ordering::Relaxed));
+                let body = CurrentState::get_json_str();
                 format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/2.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                     body.len(),
                     body
                 )

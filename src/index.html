@@ -3,25 +3,34 @@
     <h1>ESP32 Web Server</h1>
     <p>Toggle State: <span id="state">{}</span></p>
     <button onclick="toggle()">Toggle</button>
+
     <script>
+      let lastUpdate = 0;
+
       // Function to fetch and update the state on the webpage
       async function updateState() {
+        // Early return if 5 seconds haven't passed since the last update
+        if (Date.now() - lastUpdate < 5000) {
+          return;
+        }
+
         let response = await fetch("/state");
         let data = await response.json();
         document.getElementById("state").innerText = data.state;
+        lastUpdate = Date.now();
       }
 
       // Function to toggle the state
       async function toggle() {
-        // Send POST request to toggle the state
-        await fetch("/toggle", { method: "POST" });
-
-        // Immediately fetch and update the current state after toggling
-        await updateState();
+        // Send POST request to toggle the state and get back the state
+        let response = await fetch("/toggle", { method: "POST" });
+        let data = await response.json();
+        document.getElementById("state").innerText = data.state;
+        lastUpdate = Date.now();
       }
 
-      // Periodically refresh the state every 5 seconds
-      setInterval(updateState, 5000);
+      // Periodically refresh the state every 1 second
+      setInterval(updateState, 1000); // Check every second, but only fetch if 5 seconds have passed
 
       // Call updateState initially to load the current state on page load
       updateState();
