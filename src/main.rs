@@ -144,12 +144,13 @@ async fn main(spawner: Spawner) {
     {
         let start_time = Instant::now();
         let max_motor_percent = CURRENT_MAX_MOTOR_DUTY_PERCENT.load(Ordering::Relaxed);
-        // let duty_percent = small_rng.gen_range(MIN_MOTOR_DUTY_PERCENT..=max_motor_percent);
-        let duty_percent = 99u8;
+        // let duty_percent = max_motor_percent;
+        let duty_percent = small_rng.gen_range(MIN_MOTOR_DUTY_PERCENT..=max_motor_percent);
 
         let max_movement_duration = CURRENT_MAX_MOVEMENT_DURATION.load(Ordering::Relaxed);
         let movement_duration_ms =
             small_rng.gen_range(MIN_MOVEMENT_DURATION..=max_movement_duration);
+        // let movement_duration = Duration::from_millis(max_movement_duration.into());
         let movement_duration = Duration::from_millis(movement_duration_ms.into());
 
         motor.start_movement(direction, duty_percent);
