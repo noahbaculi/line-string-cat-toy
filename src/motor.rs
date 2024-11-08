@@ -1,3 +1,4 @@
+use esp_hal::gpio::{AnyPin, Output};
 use esp_hal::ledc::timer::TimerIFace;
 use esp_hal::{
     gpio::OutputPin,
@@ -12,33 +13,40 @@ pub enum MotorDirection {
     Reverse,
 }
 
-pub struct Motor<'a, S, O1, O2>
+/// Abstraction for the TB6612FNG motor driver
+pub struct Motor<'a, S, O1, O2, O3, O4>
 where
     S: TimerSpeed,
     O1: OutputPin,
     O2: OutputPin,
+    O3: OutputPin,
+    O4: OutputPin,
 {
-    pwm_channel_forward: channel::Channel<'a, S, O1>,
-    pwm_channel_reverse: channel::Channel<'a, S, O2>,
+    pin_standby: Output<'a, O2>,
+    pwm_channel_a: channel::Channel<'a, S, O1>,
+    pin_a_in_1: Output<'a, O3>,
+    pin_a_in_2: Output<'a, O4>,
 }
 
-impl<'a, S, O1, O2> Motor<'a, S, O1, O2>
+impl<'a, S, O1, O2, O3, O4> Motor<'a, S, O1, O2, O3, O4>
 where
     S: TimerSpeed,
     O1: OutputPin,
     O2: OutputPin,
+    O3: OutputPin,
+    O4: OutputPin,
 {
     pub fn new(
         ledc_pwm_controller: &'a Ledc,
         pwm_timer: &'a dyn TimerIFace<S>,
-        pwm_channel_forward_number: channel::Number,
-        pwm_channel_reverse_number: channel::Number,
-        pwm_pin_forward: impl Peripheral<P = O1> + 'a,
-        pwm_pin_reverse: impl Peripheral<P = O2> + 'a,
+        pwm_channel_a: channel::Number,
+        pwm_pin: impl Peripheral<P = O1> + 'a,
+        pin_standby: Output<'a, O2>,
+        pin_a_in_1: Output<'a, O3>,
+        pin_a_in_2: Output<'a, O4>,
     ) -> Self {
         // Instantiate PWM channels
-        let mut pwm_channel_forward =
-            ledc_pwm_controller.get_channel(pwm_channel_forward_number, pwm_pin_forward);
+        let mut pwm_channel_forward = ledc_pwm_controller.get_channel(pwm_channel_a, pwm_pin);
         pwm_channel_forward
             .configure(channel::config::Config {
                 timer: pwm_timer,
@@ -47,37 +55,37 @@ where
             })
             .unwrap();
 
-        let mut pwm_channel_reverse =
-            ledc_pwm_controller.get_channel(pwm_channel_reverse_number, pwm_pin_reverse);
-        pwm_channel_reverse
-            .configure(channel::config::Config {
-                timer: pwm_timer,
-                duty_pct: 0,
-                pin_config: channel::config::PinConfig::PushPull,
-            })
-            .unwrap();
-
         Self {
-            pwm_channel_forward,
-            pwm_channel_reverse,
+            pwm_channel_a: pwm_channel_forward,
+            pin_standby,
+            pin_a_in_1,
+            pin_a_in_2,
         }
     }
 
     pub fn start_movement(&mut self, direction: &MotorDirection, duty_percent: u8) {
+        self.pin_standby.set_high();
         match direction {
             MotorDirection::Forward => {
-                self.pwm_channel_forward.set_duty(duty_percent).unwrap();
-                self.pwm_channel_reverse.set_duty(0).unwrap();
+                self.pin_a_in_1.set_high();
+                self.pin_a_in_2.set_low();
             }
             MotorDirection::Reverse => {
-                self.pwm_channel_forward.set_duty(0).unwrap();
-                self.pwm_channel_reverse.set_duty(duty_percent).unwrap();
+                self.pin_a_in_1.set_low();
+                self.pin_a_in_2.set_high();
             }
         }
+        self.pwm_channel_a
+            .set_duty(duty_percent)
+            .expect("Failed to set duty cycle");
     }
 
-    // fn stop(&mut self) {
-    //     self.pwm_channel_forward.set_duty(0).unwrap();
-    //     self.pwm_channel_reverse.set_duty(0).unwrap();
-    // }
+    fn stop(&mut self) {
+        self.pin_a_in_1.set_low();
+        self.pin_a_in_2.set_low();
+        self.pwm_channel_a
+            .set_duty(0)
+            .expect("Failed to set duty cycle");
+        self.pin_standby.set_low();
+    }
 }

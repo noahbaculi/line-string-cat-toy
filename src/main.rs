@@ -20,7 +20,7 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_io_async::Write;
 use esp_backtrace as _;
 use esp_hal::analog::adc::{Adc, AdcCalLine, AdcConfig, AdcPin, Attenuation};
-use esp_hal::gpio::GpioPin;
+use esp_hal::gpio::{GpioPin, Level, Output};
 use esp_hal::ledc::timer::TimerIFace;
 use esp_hal::peripherals::{ADC1, LPWR};
 use esp_hal::rtc_cntl::Rtc;
@@ -173,8 +173,10 @@ async fn main(spawner: Spawner) {
     // spawner.must_spawn(start_web_server(stack));
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    let motor_pwm_pin_forward = io.pins.gpio2;
-    let motor_pwm_pin_reverse = io.pins.gpio3;
+    let motor_standby_pin = Output::new(io.pins.gpio5, Level::Low);
+    let motor_a_forward_pin = Output::new(io.pins.gpio6, Level::Low);
+    let motor_a_reverse_pin = Output::new(io.pins.gpio7, Level::Low);
+    let motor_a_pwm_pin = io.pins.gpio8;
 
     // Instantiate PWM infra
     let mut ledc_pwm_controller = Ledc::new(peripherals.LEDC, &clocks);
@@ -192,9 +194,10 @@ async fn main(spawner: Spawner) {
         &ledc_pwm_controller,
         &pwm_timer,
         channel::Number::Channel0,
-        channel::Number::Channel1,
-        motor_pwm_pin_forward,
-        motor_pwm_pin_reverse,
+        motor_a_pwm_pin,
+        motor_standby_pin,
+        motor_a_forward_pin,
+        motor_a_reverse_pin,
     );
 
     // Instantiate ADC and mutexes
