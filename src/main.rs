@@ -16,6 +16,7 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use esp_backtrace as _;
 use esp_hal::analog::adc::{Adc, AdcCalLine, AdcConfig, AdcPin, Attenuation};
+use esp_hal::delay::Delay;
 use esp_hal::gpio::{GpioPin, Level, Output};
 use esp_hal::ledc::timer::TimerIFace;
 use esp_hal::peripherals::{ADC1, LPWR};
@@ -40,10 +41,10 @@ use static_cell::StaticCell;
 
 const NUM_ADC_SAMPLES: usize = 100; // Number of ADC samples to average
 const MAX_ACTIVE_SEC: u16 = 10 * 60; // Number of seconds the device will be active before going to deep sleep
-const MIN_MOTOR_DUTY_PERCENT: u8 = 20;
+const MIN_MOTOR_DUTY_PERCENT: u8 = 80;
 const MAX_MOTOR_DUTY_PERCENT: u8 = 100;
 const MIN_MOVEMENT_DURATION: u16 = 200; // ms
-const MAX_MOVEMENT_DURATION: u16 = 2_000; // ms
+const MAX_MOVEMENT_DURATION: u16 = 4_000; // ms
 const POTENTIOMETER_READ_INTERVAL: u16 = 200; // ms
 
 const MIN_ADC_VOLTAGE: u16 = 0; // mV
@@ -82,6 +83,7 @@ async fn main(spawner: Spawner) {
 
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::max(system.clock_control).freeze();
+    let delay = Delay::new(&clocks);
 
     let systimer = SystemTimer::new(peripherals.SYSTIMER).split::<Target>();
     esp_hal_embassy::init(&clocks, systimer.alarm0);
@@ -166,6 +168,22 @@ async fn main(spawner: Spawner) {
                 debug!("Drastic parameter change detected, breaking loop");
                 break; // Break the loop if there is a drastic parameter change
             }
+        }
+
+        let delay_ms = small_rng.gen_range(0..=(max_movement_duration / 2));
+        // Check a delay duration threshold to avoid delays that are too short
+        if delay_ms > 500 {
+            info!("Waiting before next movement: {} ms", delay_ms);
+            motor.stop();
+            delay.delay_millis(delay_ms.into());
+        }
+
+        if small_rng.gen_range(1..=10) == 1 {
+            let long_delay_ms =
+                small_rng.gen_range((2 * max_movement_duration)..=(6 * max_movement_duration));
+            info!("Waiting longer before next movement: {} ms", long_delay_ms);
+            motor.stop();
+            delay.delay_millis(long_delay_ms.into());
         }
     }
 }
@@ -252,7 +270,7 @@ async fn monitor_duration_pot(
             debug!("Max duration: {}", max_duration);
             CURRENT_MAX_MOVEMENT_DURATION.store(max_duration, Ordering::Relaxed);
 
-            if prev_max_duration.abs_diff(max_duration) > 10 {
+            if prev_max_duration.abs_diff(max_duration) > 1_000 {
                 DRASTIC_PARAMETER_CHANGE.store(true, Ordering::Relaxed);
             }
 

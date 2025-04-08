@@ -80,12 +80,12 @@ where
             .expect("Failed to set duty cycle");
     }
 
-    // fn stop(&mut self) {
-    //     self.pin_a_in_1.set_low();
-    //     self.pin_a_in_2.set_low();
-    //     self.pwm_channel_a
-    //         .set_duty(0)
-    //         .expect("Failed to set duty cycle");
-    //     self.pin_standby.set_low();
-    // }
+    pub fn stop(&mut self) {
+        self.pin_a_in_1.set_low();
+        self.pin_a_in_2.set_low();
+        self.pwm_channel_a
+            .set_duty(0)
+            .expect("Failed to set duty cycle");
+        self.pin_standby.set_low();
+    }
 }
